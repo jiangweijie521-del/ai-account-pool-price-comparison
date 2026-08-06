@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <meta name="theme-color" content="#f3f6f9">
+    <title>库存比价台</title>
+    <link rel="icon" href="/assets/stamp-frame.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/styles.css?v=20260804-worker-v1">
+    <script src="/app.js?v=20260804-worker-v1" defer></script>
+  </head>
+  <body>
+    <!--
+    THESIS: 先给最低价，再给完整证据；拒绝通用后台卡片墙。
+    OWN-WORLD: 冷白票据纸、黑色印墨、钴蓝状态章、安全黄最低价带，方正收银按键与虚线分联。
+    STORY: 使用者打开即看见同步状态和重点类别低价，随后核对同款跨店价与分类库存，一次点击进入原商品。
+    FIRST VIEWPORT: 标题与状态同排，三个大控制居中；今日低价登记条横跨页面，完整列表在首屏底部开始。
+    FORM: 收银小票价格登记簿，候选 7，seed f0e53ada；批准稿 comp-c-cheapest-first。
+    FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
+    -->
+    <a class="skip-link" href="#inventory">跳到分类库存</a>
+
+    <div class="paper">
+      <header class="masthead">
+        <div>
+          <h1>库存比价台</h1>
+          <p class="subtitle">四家店铺 · 有货优先 · 同类价格从低到高</p>
+        </div>
+        <div class="masthead-status">
+          <time id="updatedAt" datetime="">正在读取最新库存…</time>
+          <p id="syncStamp" class="sync-stamp" data-state="loading">连接中</p>
+        </div>
+      </header>
+
+      <main>
+        <section class="controls" aria-label="库存控制">
+          <div class="control-grid">
+            <button id="availabilityToggle" class="control-key" type="button" aria-pressed="true">
+              <span class="control-key-main">
+                <svg class="key-icon" viewBox="0 0 32 32" aria-hidden="true"><path d="M4 6h24L19 17v8l-6 3V17L4 6Z"/></svg>
+                <span>只看有货</span>
+              </span>
+              <small id="availabilityState">已开启</small>
+            </button>
+            <button id="refreshButton" class="control-key control-key-primary" type="button">
+              <span class="control-key-main">
+                <svg class="key-icon" viewBox="0 0 32 32" aria-hidden="true"><path d="M26 11a11 11 0 1 0 1 9"/><path d="M26 4v7h-7"/></svg>
+                <span id="refreshLabel">立即刷新</span>
+              </span>
+              <small>重新读取四家店铺</small>
+            </button>
+            <div class="control-key auto-key" role="status" aria-live="off">
+              <span class="control-key-main">
+                <svg class="key-icon" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="12"/><path d="M16 9v8l5 3"/></svg>
+                <span>自动刷新</span>
+              </span>
+              <small id="countdown">60 秒后</small>
+            </div>
+          </div>
+
+          <form id="searchForm" class="search-strip" role="search">
+            <label for="searchInput">搜索商品、类别或店铺</label>
+            <div class="search-control">
+              <input
+                id="searchInput"
+                name="search"
+                type="search"
+                inputmode="search"
+                enterkeyhint="search"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="可直接用语音输入关键词，例如：接码"
+              >
+              <button id="clearSearch" type="button" hidden>清空</button>
+            </div>
+          </form>
+        </section>
+
+        <p id="notice" class="notice" role="status" aria-live="polite">正在读取四家店铺，请稍候…</p>
+
+        <section id="cheapest" class="receipt-section" aria-labelledby="cheapestTitle" hidden>
+          <div class="section-heading">
+            <h2 id="cheapestTitle">今日低价</h2>
+            <p>重点类别当前最低价</p>
+          </div>
+          <div id="cheapestList" class="cheapest-list"></div>
+        </section>
+
+        <section id="comparisons" class="receipt-section" aria-labelledby="comparisonsTitle" hidden>
+          <div class="section-heading">
+            <h2 id="comparisonsTitle">同款多店比价</h2>
+            <p>标题相同且至少两家店可购买</p>
+          </div>
+          <div id="comparisonList"></div>
+        </section>
+
+        <section id="inventory" class="receipt-section inventory" aria-labelledby="inventoryTitle">
+          <div class="section-heading">
+            <h2 id="inventoryTitle">分类库存</h2>
+            <p id="resultCount">等待数据</p>
+          </div>
+          <div id="inventoryList" aria-busy="true">
+            <p class="loading-message">正在汇总商品、库存和价格…</p>
+          </div>
+        </section>
+
+        <section class="receipt-section shop-section" aria-labelledby="shopTitle">
+          <div class="section-heading">
+            <h2 id="shopTitle">店铺读取状态</h2>
+            <p>点击店名可打开原店铺</p>
+          </div>
+          <div id="shopList" class="shop-list"></div>
+        </section>
+      </main>
+
+      <footer>
+        <p>价格和库存来自店铺公开接口；同类分组与同款识别是关键词辅助，不代表规格、质保、售后或质量完全相同。购买前请打开商品详情核对。</p>
+        <p>本页通过 Cloudflare 安全发布，不收集账号或支付信息。</p>
+      </footer>
+    </div>
+
+    <noscript>这个页面需要启用 JavaScript 才能自动读取和整理库存。</noscript>
+  </body>
+</html>

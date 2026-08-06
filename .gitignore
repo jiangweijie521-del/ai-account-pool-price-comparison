@@ -1,0 +1,31 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Runtime data and logs
+inventory-cache.json
+*.log
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local tooling and deployment evidence
+.agents/
+.harness/
+.impeccable/
+.launcher-probe/
+cloudflare/.wrangler/
+cloudflare/public/
+
+# Keep only the two public screenshots
+evidence/*
+!evidence/online-desktop-final.png
+!evidence/online-mobile-final.png
+
+# macOS metadata
+.DS_Store
+._*
+

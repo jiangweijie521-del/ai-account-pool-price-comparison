@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="140" viewBox="0 0 320 140">
+  <defs>
+    <pattern id="wear" width="80" height="70" patternUnits="userSpaceOnUse">
+      <rect width="80" height="70" fill="white"/>
+      <g fill="black">
+        <circle cx="9" cy="18" r="0.9"/><circle cx="28" cy="8" r="0.65"/><circle cx="47" cy="26" r="1.1"/>
+        <circle cx="68" cy="13" r="0.75"/><circle cx="17" cy="51" r="1.15"/><circle cx="39" cy="61" r="0.7"/>
+        <circle cx="63" cy="47" r="0.95"/><path d="M4 34h7v1.1H4zM51 5h8v1H51zM24 34h5v.8h-5zM66 64h9v.9h-9z"/>
+      </g>
+    </pattern>
+    <mask id="distress" maskUnits="userSpaceOnUse" x="0" y="0" width="320" height="140">
+      <rect width="320" height="140" fill="url(#wear)"/>
+    </mask>
+  </defs>
+  <rect width="320" height="140" fill="white" mask="url(#distress)"/>
+</svg>
+
