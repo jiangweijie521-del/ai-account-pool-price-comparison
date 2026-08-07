@@ -1,0 +1,284 @@
+:root {
+  color-scheme: light;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", "PingFang SC", sans-serif;
+  color: #111317;
+  background: #eef1f4;
+  font-size: 16px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: #eef1f4;
+}
+
+a,
+button {
+  min-height: 44px;
+}
+
+a:focus-visible,
+button:focus-visible {
+  outline: 3px solid #0b45c7;
+  outline-offset: 3px;
+}
+
+.topbar,
+main,
+footer {
+  width: min(1180px, calc(100% - 32px));
+  margin-inline: auto;
+}
+
+.topbar {
+  min-height: 108px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.topbar h1,
+.section-heading h2,
+.eyebrow,
+p {
+  margin: 0;
+}
+
+.topbar h1 {
+  font-size: 2rem;
+  line-height: 1.15;
+}
+
+.topbar a {
+  display: inline-flex;
+  align-items: center;
+  color: #073486;
+  font-weight: 700;
+}
+
+.eyebrow {
+  margin-bottom: 5px;
+  color: #5b6470;
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+main {
+  background: #ffffff;
+  border-top: 4px solid #111317;
+  border-bottom: 1px solid #aeb6c0;
+}
+
+.summary,
+.history {
+  padding: 28px 32px;
+}
+
+.history {
+  border-top: 1px solid #aeb6c0;
+}
+
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 22px;
+}
+
+.section-heading h2 {
+  font-size: 1.25rem;
+}
+
+#updatedAt {
+  color: #5b6470;
+  font-variant-numeric: tabular-nums;
+}
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0;
+  border: 1px solid #aeb6c0;
+}
+
+.metrics div {
+  min-width: 0;
+  padding: 18px 20px;
+  border-right: 1px solid #aeb6c0;
+}
+
+.metrics div:last-child {
+  border-right: 0;
+}
+
+.metrics dt {
+  color: #5b6470;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.metrics dd {
+  margin: 8px 0 0;
+  font-size: 1.75rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+button {
+  border: 1px solid #0b45c7;
+  border-radius: 4px;
+  padding: 0 16px;
+  background: #0b45c7;
+  color: #ffffff;
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #073486;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.58;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+th,
+td {
+  padding: 13px 12px;
+  border-bottom: 1px solid #d5dae0;
+  text-align: right;
+}
+
+th:first-child,
+td:first-child {
+  padding-left: 0;
+  text-align: left;
+}
+
+th:last-child,
+td:last-child {
+  padding-right: 0;
+}
+
+th {
+  color: #5b6470;
+  font-size: 0.8rem;
+}
+
+tbody tr:hover {
+  background: #f5f7f9;
+}
+
+.table-state {
+  min-height: 92px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed #aeb6c0;
+  color: #5b6470;
+}
+
+.table-state[data-state="error"] {
+  border-color: #a11c1c;
+  color: #a11c1c;
+}
+
+footer {
+  padding-block: 18px 32px;
+  color: #5b6470;
+  font-size: 0.85rem;
+}
+
+@media (max-width: 720px) {
+  .topbar,
+  main,
+  footer {
+    width: min(100% - 20px, 1180px);
+  }
+
+  .topbar {
+    min-height: 92px;
+  }
+
+  .topbar h1 {
+    font-size: 1.65rem;
+  }
+
+  .summary,
+  .history {
+    padding: 22px 16px;
+  }
+
+  .section-heading {
+    align-items: flex-end;
+  }
+
+  .metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .metrics div:nth-child(2) {
+    border-right: 0;
+  }
+
+  .metrics div:nth-child(-n + 2) {
+    border-bottom: 1px solid #aeb6c0;
+  }
+
+  .metrics dd {
+    font-size: 1.35rem;
+  }
+
+  thead {
+    display: none;
+  }
+
+  tbody,
+  tr,
+  td {
+    display: block;
+  }
+
+  tr {
+    padding: 12px 0;
+    border-bottom: 1px solid #aeb6c0;
+  }
+
+  td,
+  td:first-child,
+  td:last-child {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 6px 0;
+    border: 0;
+    text-align: right;
+  }
+
+  td::before {
+    content: attr(data-label);
+    color: #5b6470;
+    font-size: 0.8rem;
+    font-weight: 700;
+    text-align: left;
+  }
+}

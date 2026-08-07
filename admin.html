@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <meta name="robots" content="noindex,nofollow">
+    <title>访问分析 · 号池精选</title>
+    <link rel="icon" href="/assets/stamp-frame.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/admin.css?v=20260807-analytics-v1">
+    <script src="/admin.js?v=20260807-analytics-v1" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">号池精选</p>
+        <h1>访问分析</h1>
+      </div>
+      <a href="/">返回前台</a>
+    </header>
+
+    <main>
+      <section class="summary" aria-labelledby="todayTitle">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">TODAY</p>
+            <h2 id="todayTitle">今日数据</h2>
+          </div>
+          <p id="updatedAt" role="status">正在读取…</p>
+        </div>
+        <dl class="metrics" aria-label="今日访问摘要">
+          <div>
+            <dt>独立 IP</dt>
+            <dd id="todayUniqueIps">—</dd>
+          </div>
+          <div>
+            <dt>访问次数</dt>
+            <dd id="todayVisits">—</dd>
+          </div>
+          <div>
+            <dt>平均停留</dt>
+            <dd id="todayAverage">—</dd>
+          </div>
+          <div>
+            <dt>总停留</dt>
+            <dd id="todayTotal">—</dd>
+          </div>
+        </dl>
+      </section>
+
+      <section class="history" aria-labelledby="historyTitle">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">LAST 30 DAYS</p>
+            <h2 id="historyTitle">每日明细</h2>
+          </div>
+          <button id="refreshButton" type="button">刷新数据</button>
+        </div>
+
+        <div id="tableState" class="table-state" role="status">正在加载统计数据…</div>
+        <table id="analyticsTable" hidden>
+          <thead>
+            <tr>
+              <th scope="col">日期</th>
+              <th scope="col">独立 IP</th>
+              <th scope="col">访问次数</th>
+              <th scope="col">平均停留</th>
+              <th scope="col">总停留</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+    </main>
+
+    <footer>
+      <p>仅保存每日匿名 IP 标识与近似停留时长，数据保留 <span id="retentionDays">90</span> 天。</p>
+    </footer>
+  </body>
+</html>

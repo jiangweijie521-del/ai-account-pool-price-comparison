@@ -31,8 +31,9 @@ ChatGPT Plus、Codex、OpenAI K12、Claude、Gemini 账号与反代号池的实�
 - 支持按商品名、类别或店铺即时搜索。
 - 每 5 分钟自动刷新，也可手动刷新。
 - 上游暂时不可用时保留最近一次成功库存，并明确标记“部分同步”。
+- 提供受密码保护的访问统计后台，按天查看独立 IP 数、访问次数和停留时长。
 - 桌面端和手机端自适应，无横向表格拖动。
-- 不收集账号、密码或支付信息，购买仍在原店铺完成。
+- 不收集账号、密码、支付信息或原始 IP，购买仍在原店铺完成。
 
 手机端界面：
 
@@ -55,6 +56,7 @@ ChatGPT Plus、Codex、OpenAI K12、Claude、Gemini 账号与反代号池的实�
 - 发布：Cloudflare HTTPS + Tunnel。
 - 可选回滚：Cloudflare Worker。
 - 数据保护：共享刷新缓存、请求节流和原子库存快照。
+- 隐私统计：SQLite、每日 HMAC 匿名访客标识和可见页面停留时长。
 
 ```text
 浏览器
@@ -116,7 +118,26 @@ python3 server.py --host 127.0.0.1 --port 18768 --exact-port
 
 macOS 可参考 `deployment/macos/com.ultraai.stock-comparison.plist` 配置 LaunchAgent。使用前把其中的 `YOUR_USER` 和项目路径替换成自己的实际路径。
 
-项目保留了 `cloudflare/worker.mjs` 作为可选 Worker 实现。部分上游会对数据中心或 Worker 出口触发 ESA 人机验证，因此正式使用前必须从实际生产链路验证库存接口；若 Worker 出口受限，使用具备稳定出口的主机配合 Tunnel。
+项目保留了 `cloudflare/worker.mjs` 作为可选 Worker 实现。部分上游会对数据中心或 Worker 出口触发 ESA 人机验证，因此正式使用前必须从实际生产链路验证库存接口；若 Worker 出口受限，使用具备稳定出口的主机配合 Tunnel。访问统计后台依赖 Python 服务的本地 SQLite 持久化，当前不包含在 Worker 备用实现中。
+
+## 访问统计后台
+
+Python 服务会在 `/admin` 提供密码保护的统计后台，默认用户名为 `admin`。首次部署前在项目运行目录生成一个至少 20 位的随机密码：
+
+```bash
+openssl rand -base64 32 > analytics-admin-password.txt
+chmod 600 analytics-admin-password.txt
+```
+
+启动服务后访问 `https://你的域名/admin`，浏览器会要求输入用户名和密码。也可以通过环境变量 `ANALYTICS_ADMIN_USER`、`ANALYTICS_ADMIN_PASSWORD_FILE` 和 `ANALYTICS_DB_FILE` 更改默认位置或用户名；生产环境不建议把明文密码直接写入命令、LaunchAgent 或仓库。
+
+统计口径与隐私边界：
+
+- 独立 IP：原始 IP 经“日期 + 本机随机密钥”进行 HMAC 匿名化，同一个 IP 每天只计一次，跨天不可关联。
+- 访问次数：每次打开页面创建一个独立会话，同一 IP 一天可以有多次访问。
+- 停留时长：页面可见时每 15 秒上报一次，后台展示每日平均和总停留时长；关闭浏览器、断网或休眠可能造成少量误差。
+- 数据保留：默认保留 90 天；`analytics.sqlite3`、匿名化密钥和后台密码均已加入 `.gitignore`。
+- 局限：共享网络可能让多人使用同一公网 IP，爬虫访问也可能被计入，因此独立 IP 不等同于精确人数。
 
 ## 刷新与降级策略
 
@@ -133,7 +154,9 @@ macOS 可参考 `deployment/macos/com.ultraai.stock-comparison.plist` 配置 Lau
 
 ```bash
 python3 server.py --self-test
-python3 -m py_compile server.py browser_test.py launcher_test.py
+python3 -m unittest -v analytics_test.py
+python3 -m py_compile server.py analytics_test.py browser_test.py launcher_test.py
+node --test analytics_client.test.mjs
 ```
 
 Cloudflare Worker 测试：
@@ -152,7 +175,11 @@ stock-comparison/
 ├── index.html                 # 页面结构
 ├── styles.css                # 响应式界面与设计系统
 ├── app.js                    # 搜索、筛选、渲染与刷新逻辑
-├── server.py                 # Python 服务、采集、缓存与降级
+├── analytics.js              # 匿名访问与可见停留时长上报
+├── admin.html/css/js         # 受保护的访问统计后台
+├── server.py                 # Python 服务、采集、缓存、统计与降级
+├── analytics_test.py         # 统计后端和鉴权测试
+├── analytics_client.test.mjs # 浏览器统计逻辑测试
 ├── browser_test.py           # 可选浏览器端到端测试
 ├── launcher_test.py          # 启动器测试
 ├── assets/                   # 本地字体和纹理资源
@@ -184,4 +211,3 @@ stock-comparison/
 ## License
 
 [MIT](LICENSE)
-

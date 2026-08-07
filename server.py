@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import copy
+import hashlib
+import hmac
+import ipaddress
 import json
 import math
+import os
 import re
 import socket
+import sqlite3
 import sys
 import threading
 import time
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timedelta
 from html import unescape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -28,11 +34,22 @@ CACHE_SECONDS = 290
 PERSIST_SECONDS = 15 * 60
 UPSTREAM_MIN_INTERVAL = 0.25
 HTTP_TIMEOUT = 20
-SERVICE_VERSION = "2026-08-04.6"
+SERVICE_VERSION = "2026-08-07.1"
 MAX_RESPONSE_BYTES = 12 * 1024 * 1024
 PAGE_SIZE = 200
 MAX_PAGES = 20
 CACHE_FILE = ROOT / "inventory-cache.json"
+ANALYTICS_DB_FILE = Path(os.environ.get("ANALYTICS_DB_FILE", ROOT / "analytics.sqlite3"))
+ANALYTICS_HASH_SECRET_FILE = Path(os.environ.get("ANALYTICS_HASH_SECRET_FILE", ROOT / "analytics-secret.key"))
+ANALYTICS_ADMIN_PASSWORD_FILE = Path(
+    os.environ.get("ANALYTICS_ADMIN_PASSWORD_FILE", ROOT / "analytics-admin-password.txt")
+)
+ANALYTICS_ADMIN_USER = os.environ.get("ANALYTICS_ADMIN_USER", "admin")
+ANALYTICS_ADMIN_PASSWORD: Optional[str] = os.environ.get("ANALYTICS_ADMIN_PASSWORD")
+ANALYTICS_HASH_SECRET: Optional[bytes] = None
+ANALYTICS_RETENTION_DAYS = 90
+ANALYTICS_MAX_BODY_BYTES = 4096
+ANALYTICS_DURATION_GRACE_SECONDS = 5
 
 SHOPS = (
     {"name": "硬核HENRY", "token": "VAELFLP1", "url": f"{API_ROOT}/shop/VAELFLP1"},
@@ -68,6 +85,12 @@ STATIC_FILES = {
     "/index.html": ("index.html", "text/html; charset=utf-8"),
     "/styles.css": ("styles.css", "text/css; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+    "/analytics.js": ("analytics.js", "text/javascript; charset=utf-8"),
+    "/admin": ("admin.html", "text/html; charset=utf-8"),
+    "/admin/": ("admin.html", "text/html; charset=utf-8"),
+    "/admin.html": ("admin.html", "text/html; charset=utf-8"),
+    "/admin.css": ("admin.css", "text/css; charset=utf-8"),
+    "/admin.js": ("admin.js", "text/javascript; charset=utf-8"),
     "/assets/paper-fiber.svg": ("assets/paper-fiber.svg", "image/svg+xml"),
     "/assets/ink-mask.svg": ("assets/ink-mask.svg", "image/svg+xml"),
     "/assets/stamp-frame.svg": ("assets/stamp-frame.svg", "image/svg+xml"),
@@ -80,10 +103,13 @@ LAST_GOOD: dict[str, dict[str, Any]] = {}
 LAST_PERSISTED_AT = 0.0
 UPSTREAM_RATE_LOCK = threading.Lock()
 UPSTREAM_NEXT_REQUEST_AT = 0.0
+ANALYTICS_LOCK = threading.Lock()
 
 TAG_RE = re.compile(r"<[^>]+>")
 SPACE_RE = re.compile(r"\s+")
 NON_WORD_RE = re.compile(r"[\W_]+", re.UNICODE)
+ANALYTICS_SESSION_RE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
+ADMIN_PATHS = {"/admin", "/admin/", "/admin.html", "/admin.css", "/admin.js", "/api/admin/analytics"}
 
 
 def clean_text(value: Any) -> str:
@@ -510,10 +536,205 @@ def get_inventory(force: bool = False) -> dict[str, Any]:
         return payload
 
 
+def get_analytics_secret() -> bytes:
+    global ANALYTICS_HASH_SECRET
+    if ANALYTICS_HASH_SECRET is not None:
+        return ANALYTICS_HASH_SECRET
+    with ANALYTICS_LOCK:
+        if ANALYTICS_HASH_SECRET is not None:
+            return ANALYTICS_HASH_SECRET
+        try:
+            secret = ANALYTICS_HASH_SECRET_FILE.read_bytes()
+        except FileNotFoundError:
+            ANALYTICS_HASH_SECRET_FILE.parent.mkdir(parents=True, exist_ok=True)
+            secret = os.urandom(32)
+            try:
+                descriptor = os.open(ANALYTICS_HASH_SECRET_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                secret = ANALYTICS_HASH_SECRET_FILE.read_bytes()
+            else:
+                with os.fdopen(descriptor, "wb") as handle:
+                    handle.write(secret)
+        if len(secret) < 32:
+            raise ValueError("analytics hash secret must contain at least 32 bytes")
+        ANALYTICS_HASH_SECRET = secret
+        return secret
+
+
+def get_analytics_admin_password() -> Optional[str]:
+    global ANALYTICS_ADMIN_PASSWORD
+    if ANALYTICS_ADMIN_PASSWORD:
+        return ANALYTICS_ADMIN_PASSWORD
+    try:
+        password = ANALYTICS_ADMIN_PASSWORD_FILE.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if len(password) < 20:
+        return None
+    ANALYTICS_ADMIN_PASSWORD = password
+    return password
+
+
+def hash_visitor(client_ip: str, day: str, secret: bytes) -> str:
+    message = f"{day}\0{client_ip}".encode("utf-8")
+    return hmac.new(secret, message, hashlib.sha256).hexdigest()
+
+
+def analytics_connection(database: Path) -> sqlite3.Connection:
+    database.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(str(database), timeout=5)
+    try:
+        os.chmod(database, 0o600)
+    except OSError:
+        connection.close()
+        raise
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA journal_mode=WAL")
+    connection.execute("PRAGMA foreign_keys=ON")
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS visitors (
+            day TEXT NOT NULL,
+            visitor_hash TEXT NOT NULL,
+            PRIMARY KEY (day, visitor_hash)
+        );
+        CREATE TABLE IF NOT EXISTS sessions (
+            session_id TEXT NOT NULL,
+            day TEXT NOT NULL,
+            visitor_hash TEXT NOT NULL,
+            started_at INTEGER NOT NULL,
+            last_seen INTEGER NOT NULL,
+            active_seconds INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (session_id, day)
+        );
+        CREATE INDEX IF NOT EXISTS sessions_day_idx ON sessions(day);
+        """
+    )
+    return connection
+
+
+def record_analytics_event(
+    database: Path,
+    secret: bytes,
+    client_ip: str,
+    session_id: str,
+    active_seconds: int,
+    now: Optional[datetime] = None,
+) -> None:
+    if not ANALYTICS_SESSION_RE.fullmatch(session_id):
+        raise ValueError("invalid analytics session")
+    moment = now or datetime.now().astimezone()
+    day = moment.date().isoformat()
+    timestamp = int(moment.timestamp())
+    visitor_hash = hash_visitor(client_ip, day, secret)
+    requested_duration = max(0, min(int(active_seconds), 24 * 60 * 60))
+    cutoff = (moment.date() - timedelta(days=ANALYTICS_RETENTION_DAYS)).isoformat()
+
+    with ANALYTICS_LOCK, analytics_connection(database) as connection:
+        connection.execute(
+            "INSERT OR IGNORE INTO visitors(day, visitor_hash) VALUES (?, ?)",
+            (day, visitor_hash),
+        )
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO sessions(
+                session_id, day, visitor_hash, started_at, last_seen, active_seconds
+            ) VALUES (?, ?, ?, ?, ?, 0)
+            """,
+            (session_id, day, visitor_hash, timestamp, timestamp),
+        )
+        row = connection.execute(
+            "SELECT started_at FROM sessions WHERE session_id = ? AND day = ? AND visitor_hash = ?",
+            (session_id, day, visitor_hash),
+        ).fetchone()
+        if row is not None:
+            wall_time = max(0, timestamp - int(row["started_at"]))
+            safe_duration = min(requested_duration, wall_time + ANALYTICS_DURATION_GRACE_SECONDS)
+            connection.execute(
+                """
+                UPDATE sessions
+                SET last_seen = MAX(last_seen, ?), active_seconds = MAX(active_seconds, ?)
+                WHERE session_id = ? AND day = ? AND visitor_hash = ?
+                """,
+                (timestamp, safe_duration, session_id, day, visitor_hash),
+            )
+        connection.execute("DELETE FROM sessions WHERE day < ?", (cutoff,))
+        connection.execute("DELETE FROM visitors WHERE day < ?", (cutoff,))
+
+
+def get_analytics_summary(
+    database: Path,
+    days: int = 30,
+    now: Optional[datetime] = None,
+) -> dict[str, Any]:
+    moment = now or datetime.now().astimezone()
+    days = max(1, min(int(days), ANALYTICS_RETENTION_DAYS))
+    cutoff = (moment.date() - timedelta(days=days - 1)).isoformat()
+    with ANALYTICS_LOCK, analytics_connection(database) as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                visitors.day AS day,
+                COUNT(DISTINCT visitors.visitor_hash) AS unique_ips,
+                COUNT(sessions.session_id) AS visits,
+                COALESCE(ROUND(AVG(sessions.active_seconds)), 0) AS average_seconds,
+                COALESCE(SUM(sessions.active_seconds), 0) AS total_seconds
+            FROM visitors
+            LEFT JOIN sessions
+              ON sessions.day = visitors.day
+             AND sessions.visitor_hash = visitors.visitor_hash
+            WHERE visitors.day >= ?
+            GROUP BY visitors.day
+            ORDER BY visitors.day DESC
+            """,
+            (cutoff,),
+        ).fetchall()
+    return {
+        "generated_at": moment.isoformat(timespec="seconds"),
+        "retention_days": ANALYTICS_RETENTION_DAYS,
+        "days": [
+            {
+                "date": row["day"],
+                "unique_ips": int(row["unique_ips"]),
+                "visits": int(row["visits"]),
+                "average_seconds": int(row["average_seconds"]),
+                "total_seconds": int(row["total_seconds"]),
+            }
+            for row in rows
+        ],
+    }
+
+
+def valid_basic_auth(header: Optional[str], username: str, password: str) -> bool:
+    if not header or not header.startswith("Basic "):
+        return False
+    try:
+        decoded = base64.b64decode(header[6:], validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return False
+    supplied_user, separator, supplied_password = decoded.partition(":")
+    return bool(separator) and hmac.compare_digest(supplied_user, username) and hmac.compare_digest(
+        supplied_password, password
+    )
+
+
+def normalized_client_ip(candidate: str, fallback: str) -> str:
+    try:
+        return ipaddress.ip_address(candidate.strip()).compressed
+    except ValueError:
+        return ipaddress.ip_address(fallback).compressed
+
+
 class AppHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
-    def send_bytes(self, status: int, body: bytes, content_type: str) -> None:
+    def send_bytes(
+        self,
+        status: int,
+        body: bytes,
+        content_type: str,
+        extra_headers: Optional[dict[str, str]] = None,
+    ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -523,6 +744,8 @@ class AppHandler(BaseHTTPRequestHandler):
         self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
         self.send_header("Permissions-Policy", "camera=(), geolocation=(), microphone=()")
         self.send_header("Content-Security-Policy", "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+        for name, value in (extra_headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -530,8 +753,25 @@ class AppHandler(BaseHTTPRequestHandler):
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         self.send_bytes(status, body, "application/json; charset=utf-8")
 
+    def require_admin(self) -> bool:
+        password = get_analytics_admin_password()
+        if password is None:
+            self.send_bytes(503, "后台尚未配置".encode("utf-8"), "text/plain; charset=utf-8")
+            return False
+        if valid_basic_auth(self.headers.get("Authorization"), ANALYTICS_ADMIN_USER, password):
+            return True
+        self.send_bytes(
+            401,
+            "需要后台凭据".encode("utf-8"),
+            "text/plain; charset=utf-8",
+            {"WWW-Authenticate": 'Basic realm="Stock analytics", charset="UTF-8"'},
+        )
+        return False
+
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
         parsed = urlparse(self.path)
+        if parsed.path in ADMIN_PATHS and not self.require_admin():
+            return
         if parsed.path == "/api/health":
             self.send_json(200, {"ok": True, "service": "stock-comparison", "version": SERVICE_VERSION})
             return
@@ -542,6 +782,14 @@ class AppHandler(BaseHTTPRequestHandler):
             except Exception:
                 self.send_json(502, {"ok": False, "message": "库存服务暂时读取失败，请稍后点“立即刷新”。"})
             return
+        if parsed.path == "/api/admin/analytics":
+            try:
+                days = int(parse_qs(parsed.query).get("days", ["30"])[0])
+                payload = get_analytics_summary(ANALYTICS_DB_FILE, days)
+                self.send_json(200, payload)
+            except (OSError, sqlite3.Error, ValueError):
+                self.send_json(503, {"ok": False, "message": "统计数据暂时不可用"})
+            return
 
         static = STATIC_FILES.get(parsed.path)
         if static is None:
@@ -549,9 +797,41 @@ class AppHandler(BaseHTTPRequestHandler):
             return
         filename, content_type = static
         try:
-            self.send_bytes(200, (ROOT / filename).read_bytes(), content_type)
+            headers = {"X-Robots-Tag": "noindex, nofollow"} if parsed.path in ADMIN_PATHS else None
+            self.send_bytes(200, (ROOT / filename).read_bytes(), content_type, headers)
         except FileNotFoundError:
             self.send_bytes(404, "页面文件缺失".encode("utf-8"), "text/plain; charset=utf-8")
+
+    def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        parsed = urlparse(self.path)
+        if parsed.path != "/api/analytics/session":
+            self.send_bytes(404, "未找到接口".encode("utf-8"), "text/plain; charset=utf-8")
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > ANALYTICS_MAX_BODY_BYTES:
+                raise ValueError("invalid body length")
+            payload = json.loads(self.rfile.read(length))
+            session_id = payload.get("session_id")
+            active_seconds = payload.get("active_seconds")
+            if not isinstance(session_id, str) or not isinstance(active_seconds, int) or isinstance(active_seconds, bool):
+                raise ValueError("invalid analytics payload")
+            forwarded_ip = self.headers.get("CF-Connecting-IP", self.client_address[0])
+            client_ip = normalized_client_ip(forwarded_ip, self.client_address[0])
+            record_analytics_event(
+                ANALYTICS_DB_FILE,
+                get_analytics_secret(),
+                client_ip,
+                session_id,
+                active_seconds,
+            )
+        except (ValueError, json.JSONDecodeError):
+            self.send_json(400, {"ok": False, "message": "统计请求格式无效"})
+            return
+        except (OSError, sqlite3.Error):
+            self.send_json(503, {"ok": False, "message": "统计服务暂时不可用"})
+            return
+        self.send_bytes(204, b"", "text/plain; charset=utf-8")
 
     def log_message(self, format_string: str, *args: Any) -> None:
         print(f"[{self.log_date_time_string()}] {format_string % args}")
