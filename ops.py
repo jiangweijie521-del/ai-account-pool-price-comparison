@@ -52,15 +52,23 @@ def backup_database(
     destination = backup_dir / f"analytics-{moment.strftime('%Y%m%d-%H%M%S-%f')}.sqlite3"
     temporary = destination.with_suffix(".sqlite3.tmp")
 
-    with sqlite3.connect(database) as source, sqlite3.connect(temporary) as target:
-        source.backup(target)
-    os.chmod(temporary, 0o600)
-    with sqlite3.connect(temporary) as check:
-        result = check.execute("PRAGMA integrity_check").fetchone()[0]
-    if result != "ok":
+    def remove_temporary_files() -> None:
         temporary.unlink(missing_ok=True)
-        raise sqlite3.DatabaseError(f"backup integrity check failed: {result}")
-    temporary.replace(destination)
+        Path(f"{temporary}-wal").unlink(missing_ok=True)
+        Path(f"{temporary}-shm").unlink(missing_ok=True)
+
+    remove_temporary_files()
+    try:
+        with sqlite3.connect(database) as source, sqlite3.connect(temporary) as target:
+            source.backup(target)
+        os.chmod(temporary, 0o600)
+        with sqlite3.connect(temporary) as check:
+            result = check.execute("PRAGMA integrity_check").fetchone()[0]
+        if result != "ok":
+            raise sqlite3.DatabaseError(f"backup integrity check failed: {result}")
+        temporary.replace(destination)
+    finally:
+        remove_temporary_files()
 
     backups = sorted(backup_dir.glob("analytics-*.sqlite3"), reverse=True)
     for expired in backups[keep:]:

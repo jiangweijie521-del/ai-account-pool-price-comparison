@@ -36,6 +36,7 @@ class BackupTest(unittest.TestCase):
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM sample").fetchone()[0], 2)
                 self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone()[0], "ok")
             self.assertEqual(newest.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(list(backup_dir.glob("*.tmp*")), [])
 
 
 class MonitorTest(unittest.TestCase):
