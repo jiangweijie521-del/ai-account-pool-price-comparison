@@ -1013,7 +1013,7 @@ class AppHandler(BaseHTTPRequestHandler):
 
 
 class AppServer(ThreadingHTTPServer):
-    allow_reuse_address = False
+    allow_reuse_address = True
 
     def handle_error(self, request: Any, client_address: Any) -> None:
         if isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError)):
