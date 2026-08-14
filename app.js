@@ -27,6 +27,7 @@ const state = {
   query: "",
   loading: false,
   countdown: 60,
+  expandedGroups: new Set(),
 };
 
 const priceFormatter = new Intl.NumberFormat("zh-CN", {
@@ -67,6 +68,17 @@ function formatTime(value) {
   }).format(date);
 }
 
+function formatAge(value) {
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) return "时间未知";
+  const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000));
+  if (seconds < 60) return `${seconds} 秒前`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.round(minutes / 60);
+  return hours < 48 ? `${hours} 小时前` : `${Math.round(hours / 24)} 天前`;
+}
+
 function stockText(item) {
   if (!item.available) return "缺货";
   return item.stock === null ? "库存未限" : `库存 ${item.stock}`;
@@ -83,6 +95,7 @@ function safeLink(value, fallback) {
 
 function sortedItems(items) {
   return [...items].sort((left, right) => {
+    if (Boolean(left.stale) !== Boolean(right.stale)) return left.stale ? 1 : -1;
     if (left.available !== right.available) return left.available ? -1 : 1;
     if (left.price !== right.price) return left.price - right.price;
     return collator.compare(left.shop, right.shop);
@@ -118,6 +131,7 @@ function makeProductRow(item, isCheapest = false) {
   row.setAttribute("aria-label", `${item.name}，${item.shop}，${stockText(item)}，${formatPrice(item.price)}，打开商品详情`);
   if (isCheapest) row.classList.add("is-cheapest");
   if (!item.available) row.classList.add("is-unavailable");
+  if (item.stale) row.classList.add("is-stale");
 
   const main = createElement("span", "product-main");
   const name = createElement("strong");
@@ -127,6 +141,7 @@ function makeProductRow(item, isCheapest = false) {
 
   const tags = createElement("span", "tags");
   const tagValues = [...item.tags];
+  if (item.stale) tagValues.unshift(`旧数据 · ${formatAge(item.fetched_at)}`);
   if (item.same_product_shops >= 2) tagValues.unshift(`同款 ${item.same_product_shops} 店`);
   if (tagValues.length === 0) tagValues.push("查看详情");
   for (const value of tagValues.slice(0, 4)) tags.append(createElement("span", "tag", value));
@@ -143,7 +158,7 @@ function makeProductRow(item, isCheapest = false) {
 
 function renderCheapest(items) {
   const winners = new Map();
-  for (const item of items.filter((entry) => entry.available)) {
+  for (const item of items.filter((entry) => entry.available && !entry.stale)) {
     const shelfGroup = item.group.startsWith("GPT Plus") ? "GPT Plus" : item.group;
     const current = winners.get(shelfGroup);
     if (!current || item.price < current.price) winners.set(shelfGroup, { ...item, shelfGroup });
@@ -195,7 +210,8 @@ function renderComparisons(items) {
     const meta = createElement("p", "", `${new Set(entries.map((item) => item.shop_token)).size} 家店 · 价格从低到高`);
     heading.append(title, meta);
     cluster.append(heading, makeRowHead());
-    entries.forEach((item, index) => cluster.append(makeProductRow(item, index === 0 && item.available)));
+    const winner = entries.find((item) => item.available && !item.stale);
+    entries.forEach((item) => cluster.append(makeProductRow(item, item === winner)));
     elements.comparisonList.append(cluster);
   }
 }
@@ -228,7 +244,7 @@ function renderInventory(items) {
 
   for (const [groupName, entries] of sortedGroups) {
     const sorted = sortedItems(entries);
-    const firstAvailableIndex = sorted.findIndex((item) => item.available);
+    const winner = sorted.find((item) => item.available && !item.stale);
     const section = createElement("section", "inventory-group");
     const heading = createElement("div", "group-heading");
     const title = createElement("h3", "", groupName);
@@ -236,7 +252,19 @@ function renderInventory(items) {
     const meta = createElement("p", "", `${availableCount} 件有货 / 共 ${sorted.length} 件`);
     heading.append(title, meta);
     section.append(heading, makeRowHead());
-    sorted.forEach((item, index) => section.append(makeProductRow(item, index === firstAvailableIndex)));
+    const shouldCollapse = window.innerWidth <= 760 && !state.query && sorted.length > 6 && !state.expandedGroups.has(groupName);
+    const shown = shouldCollapse ? sorted.slice(0, 6) : sorted;
+    shown.forEach((item) => section.append(makeProductRow(item, item === winner)));
+    if (shouldCollapse) {
+      const button = createElement("button", "group-expand", `展开其余 ${sorted.length - shown.length} 件`);
+      button.type = "button";
+      button.setAttribute("aria-label", `展开${groupName}其余 ${sorted.length - shown.length} 件商品`);
+      button.addEventListener("click", () => {
+        state.expandedGroups.add(groupName);
+        render();
+      });
+      section.append(button);
+    }
     elements.inventoryList.append(section);
   }
 }
@@ -253,7 +281,11 @@ function renderShops() {
     link.dataset.state = shop.ok ? "ok" : shop.stale ? "stale" : "error";
     link.append(
       createElement("strong", "", `${shop.name} · ${status}`),
-      createElement("small", "", `${shop.item_count} 件商品 · ${shop.message}`),
+      createElement(
+        "small",
+        "",
+        `${shop.item_count} 件商品 · ${shop.message}${shop.fetched_at ? ` · 数据于 ${formatAge(shop.fetched_at)}` : ""}`,
+      ),
     );
     elements.shopList.append(link);
   }
@@ -294,14 +326,22 @@ async function loadInventory(force = false) {
 
     state.data = payload;
     state.countdown = Number(payload.refresh_seconds) || 60;
-    elements.updatedAt.textContent = `最后更新 ${formatTime(payload.generated_at)}`;
+    elements.updatedAt.textContent = `检查时间 ${formatTime(payload.generated_at)}`;
     elements.updatedAt.dateTime = payload.generated_at;
     elements.syncStamp.textContent = payload.partial ? "部分同步" : "数据已同步";
     elements.syncStamp.dataset.state = payload.partial ? "warning" : "success";
     const summary = payload.summary;
-    const message = payload.partial
-      ? `已显示 ${summary.available} 件有货商品；部分店铺读取异常，旧数据会标出。`
+    const delivery = payload.delivery || {};
+    const staleShops = payload.shops.filter((shop) => shop.stale && shop.fetched_at);
+    const oldestStale = staleShops.sort((left, right) => new Date(left.fetched_at) - new Date(right.fetched_at))[0];
+    let message = payload.partial
+      ? `已显示 ${summary.available} 件有货商品；旧数据已标出且不参与最低价${oldestStale ? `，最早来自 ${formatAge(oldestStale.fetched_at)}` : ""}。`
       : `已同步 ${summary.shops_fresh} 家店铺：${summary.available} 件有货，${summary.out_of_stock} 件缺货。`;
+    if (force && delivery.refresh_status === "cooldown") {
+      message = `刚刚已有刷新结果，正在使用共享数据；${delivery.retry_after_seconds || 1} 秒后可再次读取店铺。`;
+    } else if (force && delivery.refresh_status === "refreshed" && !payload.partial) {
+      message = `已重新读取 ${summary.shops_fresh} 家店铺：${summary.available} 件有货，${summary.out_of_stock} 件缺货。`;
+    }
     setNotice(message, payload.partial ? "warning" : "success");
     render();
   } catch (error) {
@@ -350,10 +390,14 @@ window.setInterval(() => {
   state.countdown -= 1;
   if (state.countdown <= 0) {
     state.countdown = state.data?.refresh_seconds || 60;
-    loadInventory(true);
+    loadInventory(false);
   }
   elements.countdown.textContent = `${Math.max(0, state.countdown)} 秒后`;
 }, 1000);
 
 updateAvailabilityControl();
 loadInventory(false);
+
+window.addEventListener("resize", () => {
+  if (state.data) render();
+});

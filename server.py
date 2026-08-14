@@ -7,6 +7,8 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import logging
+import logging.handlers
 import math
 import os
 import re
@@ -31,10 +33,13 @@ ROOT = Path(__file__).resolve().parent
 API_ROOT = "https://pay.ldxp.cn"
 REFRESH_SECONDS = 300
 CACHE_SECONDS = 290
+MANUAL_REFRESH_COOLDOWN_SECONDS = 30
 PERSIST_SECONDS = 15 * 60
 UPSTREAM_MIN_INTERVAL = 0.25
 HTTP_TIMEOUT = 20
-SERVICE_VERSION = "2026-08-07.1"
+SERVICE_VERSION = "2026-08-15.1"
+SERVICE_REVISION = os.environ.get("SERVICE_REVISION", "dev")
+SERVICE_STARTED_AT = datetime.now().astimezone().isoformat(timespec="seconds")
 MAX_RESPONSE_BYTES = 12 * 1024 * 1024
 PAGE_SIZE = 200
 MAX_PAGES = 20
@@ -50,6 +55,11 @@ ANALYTICS_HASH_SECRET: Optional[bytes] = None
 ANALYTICS_RETENTION_DAYS = 90
 ANALYTICS_MAX_BODY_BYTES = 4096
 ANALYTICS_DURATION_GRACE_SECONDS = 5
+ANALYTICS_MAX_POSTS_PER_MINUTE = 120
+ANALYTICS_MAX_SESSIONS_PER_VISITOR_DAY = 100
+ACCESS_LOG_FILE = Path(os.environ.get("ACCESS_LOG_FILE", ROOT / "access.log"))
+ACCESS_LOG_MAX_BYTES = 1024 * 1024
+ACCESS_LOG_BACKUP_COUNT = 3
 
 SHOPS = (
     {"name": "硬核HENRY", "token": "VAELFLP1", "url": f"{API_ROOT}/shop/VAELFLP1"},
@@ -86,6 +96,9 @@ STATIC_FILES = {
     "/styles.css": ("styles.css", "text/css; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/analytics.js": ("analytics.js", "text/javascript; charset=utf-8"),
+    "/robots.txt": ("robots.txt", "text/plain; charset=utf-8"),
+    "/sitemap.xml": ("sitemap.xml", "application/xml; charset=utf-8"),
+    "/favicon.ico": ("assets/stamp-frame.svg", "image/svg+xml"),
     "/admin": ("admin.html", "text/html; charset=utf-8"),
     "/admin/": ("admin.html", "text/html; charset=utf-8"),
     "/admin.html": ("admin.html", "text/html; charset=utf-8"),
@@ -94,21 +107,25 @@ STATIC_FILES = {
     "/assets/paper-fiber.svg": ("assets/paper-fiber.svg", "image/svg+xml"),
     "/assets/ink-mask.svg": ("assets/ink-mask.svg", "image/svg+xml"),
     "/assets/stamp-frame.svg": ("assets/stamp-frame.svg", "image/svg+xml"),
-    "/assets/NotoSansSC-Bold.otf": ("assets/NotoSansSC-Bold.otf", "font/otf"),
 }
 
 STATE_LOCK = threading.Lock()
 CACHE: dict[str, Any] = {"stored_at": 0.0, "payload": None}
 LAST_GOOD: dict[str, dict[str, Any]] = {}
 LAST_PERSISTED_AT = 0.0
+LAST_MANUAL_REFRESH_AT = 0.0
 UPSTREAM_RATE_LOCK = threading.Lock()
 UPSTREAM_NEXT_REQUEST_AT = 0.0
 ANALYTICS_LOCK = threading.Lock()
+ANALYTICS_RATE_LOCK = threading.Lock()
+ANALYTICS_RATE_BUCKETS: dict[str, tuple[float, int]] = {}
+ACCESS_LOGGER: Optional[logging.Logger] = None
 
 TAG_RE = re.compile(r"<[^>]+>")
 SPACE_RE = re.compile(r"\s+")
 NON_WORD_RE = re.compile(r"[\W_]+", re.UNICODE)
 ANALYTICS_SESSION_RE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
+BOT_USER_AGENT_RE = re.compile(r"(?:bot|crawler|spider|headlesschrome|curl/|wget/|python-requests|uptimerobot)", re.I)
 ADMIN_PATHS = {"/admin", "/admin/", "/admin.html", "/admin.css", "/admin.js", "/api/admin/analytics"}
 
 
@@ -203,10 +220,10 @@ def classify(name: Any, category: Any, goods_type: str = "card") -> str:
 
     if "codex" in text and any(term in text for term in ("接码", "手机验证", "实体卡")):
         return "Codex 接码"
+    if "team" in name_text or "团队" in name_text or "team" in category_text:
+        return "OpenAI Team"
     if "k12" in name_text or "k12" in category_text:
         return "OpenAI K12"
-    if re.search(r"\bteam\b", name_text) or "团队" in name_text or "team" in category_text:
-        return "OpenAI Team"
     if "gemini" in category_text or "反重力" in category_text:
         return "Gemini"
     if "claude" in category_text:
@@ -395,6 +412,10 @@ def fetch_shop(shop: dict[str, str]) -> dict[str, Any]:
                 seen.add(identity)
                 items.append(item)
 
+    fetched_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    for item in items:
+        item.update({"stale": False, "fetched_at": fetched_at})
+
     return {
         "name": shop["name"],
         "nickname": nickname,
@@ -403,6 +424,7 @@ def fetch_shop(shop: dict[str, str]) -> dict[str, Any]:
         "ok": True,
         "stale": False,
         "message": "读取成功",
+        "fetched_at": fetched_at,
         "declared_count": int(info.get("goods_count") or 0),
         "item_count": len(items),
         "items": items,
@@ -438,6 +460,8 @@ def collect_inventory() -> dict[str, Any]:
                 if token in LAST_GOOD:
                     stale = copy.deepcopy(LAST_GOOD[token])
                     stale.update({"ok": False, "stale": True, "message": f"{message}，显示上次数据"})
+                    for item in stale["items"]:
+                        item.update({"stale": True, "fetched_at": item.get("fetched_at") or stale.get("fetched_at")})
                     results[token] = stale
                 else:
                     results[token] = {
@@ -448,6 +472,7 @@ def collect_inventory() -> dict[str, Any]:
                         "ok": False,
                         "stale": False,
                         "message": message,
+                        "fetched_at": None,
                         "declared_count": 0,
                         "item_count": 0,
                         "items": [],
@@ -455,6 +480,9 @@ def collect_inventory() -> dict[str, Any]:
 
     shops = [results[shop["token"]] for shop in SHOPS]
     items = [item for shop in shops for item in shop["items"]]
+    for shop in shops:
+        for item in shop["items"]:
+            item.update({"stale": bool(shop["stale"]), "fetched_at": item.get("fetched_at") or shop.get("fetched_at")})
 
     duplicate_shops: dict[str, set[str]] = {}
     for item in items:
@@ -463,7 +491,16 @@ def collect_inventory() -> dict[str, Any]:
     for item in items:
         item["same_product_shops"] = len(duplicate_shops.get(item["canonical"], set()))
 
-    items.sort(key=lambda item: (item["group_rank"], item["group"], not item["available"], item["price"], item["shop"]))
+    items.sort(
+        key=lambda item: (
+            item["group_rank"],
+            item["group"],
+            bool(item.get("stale")),
+            not item["available"],
+            item["price"],
+            item["shop"],
+        )
+    )
     available_count = sum(1 for item in items if item["available"])
     fresh_shop_count = sum(1 for shop in shops if shop["ok"])
     stale_shop_count = sum(1 for shop in shops if shop["stale"])
@@ -504,7 +541,18 @@ def load_persisted_cache() -> Optional[dict[str, Any]]:
         if not isinstance(shop, dict) or shop.get("token") not in configured_tokens:
             continue
         restored = copy.deepcopy(shop)
-        restored.update({"ok": True, "stale": False, "message": "读取成功", "items": items_by_shop[shop["token"]]})
+        fetched_at = restored.get("fetched_at") or payload.get("generated_at")
+        restored.update(
+            {
+                "ok": True,
+                "stale": False,
+                "message": "读取成功",
+                "fetched_at": fetched_at,
+                "items": items_by_shop[shop["token"]],
+            }
+        )
+        for item in restored["items"]:
+            item.update({"stale": False, "fetched_at": item.get("fetched_at") or fetched_at})
         LAST_GOOD[shop["token"]] = restored
     return payload if LAST_GOOD else None
 
@@ -523,17 +571,41 @@ def save_persisted_cache(payload: dict[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def inventory_delivery(
+    payload: dict[str, Any],
+    refresh_status: str,
+    cache_age_seconds: float,
+    retry_after_seconds: int = 0,
+) -> dict[str, Any]:
+    delivered = copy.deepcopy(payload)
+    delivered["delivery"] = {
+        "refresh_status": refresh_status,
+        "cache_age_seconds": max(0, round(cache_age_seconds)),
+        "retry_after_seconds": max(0, int(retry_after_seconds)),
+    }
+    return delivered
+
+
 def get_inventory(force: bool = False) -> dict[str, Any]:
+    global LAST_MANUAL_REFRESH_AT
     with STATE_LOCK:
         if CACHE["payload"] is None:
             CACHE["payload"] = load_persisted_cache()
-        age = time.monotonic() - float(CACHE["stored_at"])
-        if CACHE["payload"] is not None and age < CACHE_SECONDS:
-            return copy.deepcopy(CACHE["payload"])
+        now = time.monotonic()
+        age = max(0.0, now - float(CACHE["stored_at"]))
+        if force and CACHE["payload"] is not None and LAST_MANUAL_REFRESH_AT > 0:
+            elapsed = max(0.0, now - LAST_MANUAL_REFRESH_AT)
+            if elapsed < MANUAL_REFRESH_COOLDOWN_SECONDS:
+                retry_after = math.ceil(MANUAL_REFRESH_COOLDOWN_SECONDS - elapsed)
+                return inventory_delivery(CACHE["payload"], "cooldown", age, retry_after)
+        if not force and CACHE["payload"] is not None and age < CACHE_SECONDS:
+            return inventory_delivery(CACHE["payload"], "hit", age)
         payload = collect_inventory()
+        if force:
+            LAST_MANUAL_REFRESH_AT = time.monotonic()
         save_persisted_cache(payload)
         CACHE.update({"stored_at": time.monotonic(), "payload": copy.deepcopy(payload)})
-        return payload
+        return inventory_delivery(payload, "refreshed", 0)
 
 
 def get_analytics_secret() -> bytes:
@@ -598,6 +670,31 @@ def analytics_connection(database: Path) -> sqlite3.Connection:
             visitor_hash TEXT NOT NULL,
             PRIMARY KEY (day, visitor_hash)
         );
+        """
+    )
+    session_columns = connection.execute("PRAGMA table_info(sessions)").fetchall()
+    primary_key = [row["name"] for row in session_columns if row["pk"]]
+    if session_columns and primary_key != ["session_id", "day", "visitor_hash"]:
+        connection.executescript(
+            """
+            ALTER TABLE sessions RENAME TO sessions_legacy;
+            DROP INDEX IF EXISTS sessions_day_idx;
+            CREATE TABLE sessions (
+                session_id TEXT NOT NULL,
+                day TEXT NOT NULL,
+                visitor_hash TEXT NOT NULL,
+                started_at INTEGER NOT NULL,
+                last_seen INTEGER NOT NULL,
+                active_seconds INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (session_id, day, visitor_hash)
+            );
+            INSERT OR IGNORE INTO sessions(session_id, day, visitor_hash, started_at, last_seen, active_seconds)
+            SELECT session_id, day, visitor_hash, started_at, last_seen, active_seconds FROM sessions_legacy;
+            DROP TABLE sessions_legacy;
+            """
+        )
+    connection.executescript(
+        """
         CREATE TABLE IF NOT EXISTS sessions (
             session_id TEXT NOT NULL,
             day TEXT NOT NULL,
@@ -605,7 +702,7 @@ def analytics_connection(database: Path) -> sqlite3.Connection:
             started_at INTEGER NOT NULL,
             last_seen INTEGER NOT NULL,
             active_seconds INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (session_id, day)
+            PRIMARY KEY (session_id, day, visitor_hash)
         );
         CREATE INDEX IF NOT EXISTS sessions_day_idx ON sessions(day);
         """
@@ -620,7 +717,7 @@ def record_analytics_event(
     session_id: str,
     active_seconds: int,
     now: Optional[datetime] = None,
-) -> None:
+) -> bool:
     if not ANALYTICS_SESSION_RE.fullmatch(session_id):
         raise ValueError("invalid analytics session")
     moment = now or datetime.now().astimezone()
@@ -631,6 +728,17 @@ def record_analytics_event(
     cutoff = (moment.date() - timedelta(days=ANALYTICS_RETENTION_DAYS)).isoformat()
 
     with ANALYTICS_LOCK, analytics_connection(database) as connection:
+        existing = connection.execute(
+            "SELECT 1 FROM sessions WHERE session_id = ? AND day = ? AND visitor_hash = ?",
+            (session_id, day, visitor_hash),
+        ).fetchone()
+        if existing is None:
+            session_count = connection.execute(
+                "SELECT COUNT(*) FROM sessions WHERE day = ? AND visitor_hash = ?",
+                (day, visitor_hash),
+            ).fetchone()[0]
+            if int(session_count) >= ANALYTICS_MAX_SESSIONS_PER_VISITOR_DAY:
+                return False
         connection.execute(
             "INSERT OR IGNORE INTO visitors(day, visitor_hash) VALUES (?, ?)",
             (day, visitor_hash),
@@ -660,6 +768,7 @@ def record_analytics_event(
             )
         connection.execute("DELETE FROM sessions WHERE day < ?", (cutoff,))
         connection.execute("DELETE FROM visitors WHERE day < ?", (cutoff,))
+    return True
 
 
 def get_analytics_summary(
@@ -674,18 +783,15 @@ def get_analytics_summary(
         rows = connection.execute(
             """
             SELECT
-                visitors.day AS day,
-                COUNT(DISTINCT visitors.visitor_hash) AS unique_ips,
-                COUNT(sessions.session_id) AS visits,
+                sessions.day AS day,
+                COUNT(DISTINCT sessions.visitor_hash) AS unique_ips,
+                COUNT(*) AS visits,
                 COALESCE(ROUND(AVG(sessions.active_seconds)), 0) AS average_seconds,
                 COALESCE(SUM(sessions.active_seconds), 0) AS total_seconds
-            FROM visitors
-            LEFT JOIN sessions
-              ON sessions.day = visitors.day
-             AND sessions.visitor_hash = visitors.visitor_hash
-            WHERE visitors.day >= ?
-            GROUP BY visitors.day
-            ORDER BY visitors.day DESC
+            FROM sessions
+            WHERE sessions.day >= ?
+            GROUP BY sessions.day
+            ORDER BY sessions.day DESC
             """,
             (cutoff,),
         ).fetchall()
@@ -725,6 +831,43 @@ def normalized_client_ip(candidate: str, fallback: str) -> str:
         return ipaddress.ip_address(fallback).compressed
 
 
+def analytics_request_allowed(client_ip: str, now: Optional[float] = None) -> bool:
+    moment = time.monotonic() if now is None else now
+    with ANALYTICS_RATE_LOCK:
+        window_started, count = ANALYTICS_RATE_BUCKETS.get(client_ip, (moment, 0))
+        if moment - window_started >= 60:
+            window_started, count = moment, 0
+        if count >= ANALYTICS_MAX_POSTS_PER_MINUTE:
+            return False
+        ANALYTICS_RATE_BUCKETS[client_ip] = (window_started, count + 1)
+        if len(ANALYTICS_RATE_BUCKETS) > 10_000:
+            expired = [key for key, (started, _) in ANALYTICS_RATE_BUCKETS.items() if moment - started >= 60]
+            for key in expired:
+                ANALYTICS_RATE_BUCKETS.pop(key, None)
+        return True
+
+
+def get_access_logger() -> logging.Logger:
+    global ACCESS_LOGGER
+    if ACCESS_LOGGER is not None:
+        return ACCESS_LOGGER
+    logger = logging.getLogger("stock-comparison.access")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    if not logger.handlers:
+        ACCESS_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.handlers.RotatingFileHandler(
+            ACCESS_LOG_FILE,
+            maxBytes=ACCESS_LOG_MAX_BYTES,
+            backupCount=ACCESS_LOG_BACKUP_COUNT,
+            encoding="utf-8",
+        )
+        handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+        logger.addHandler(handler)
+    ACCESS_LOGGER = logger
+    return logger
+
+
 class AppHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -734,11 +877,12 @@ class AppHandler(BaseHTTPRequestHandler):
         body: bytes,
         content_type: str,
         extra_headers: Optional[dict[str, str]] = None,
+        cache_control: str = "no-store",
     ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", cache_control)
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
@@ -747,7 +891,10 @@ class AppHandler(BaseHTTPRequestHandler):
         for name, value in (extra_headers or {}).items():
             self.send_header(name, value)
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
     def send_json(self, status: int, payload: dict[str, Any]) -> None:
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -773,7 +920,17 @@ class AppHandler(BaseHTTPRequestHandler):
         if parsed.path in ADMIN_PATHS and not self.require_admin():
             return
         if parsed.path == "/api/health":
-            self.send_json(200, {"ok": True, "service": "stock-comparison", "version": SERVICE_VERSION})
+            self.send_json(
+                200,
+                {
+                    "ok": True,
+                    "service": "stock-comparison",
+                    "version": SERVICE_VERSION,
+                    "revision": SERVICE_REVISION,
+                    "python": ".".join(map(str, sys.version_info[:3])),
+                    "started_at": SERVICE_STARTED_AT,
+                },
+            )
             return
         if parsed.path == "/api/inventory":
             try:
@@ -798,7 +955,11 @@ class AppHandler(BaseHTTPRequestHandler):
         filename, content_type = static
         try:
             headers = {"X-Robots-Tag": "noindex, nofollow"} if parsed.path in ADMIN_PATHS else None
-            self.send_bytes(200, (ROOT / filename).read_bytes(), content_type, headers)
+            immutable = bool(parsed.query) and (
+                parsed.path.endswith((".css", ".js")) or parsed.path.startswith("/assets/")
+            )
+            cache_control = "public, max-age=31536000, immutable" if immutable else "no-store"
+            self.send_bytes(200, (ROOT / filename).read_bytes(), content_type, headers, cache_control)
         except FileNotFoundError:
             self.send_bytes(404, "页面文件缺失".encode("utf-8"), "text/plain; charset=utf-8")
 
@@ -811,13 +972,24 @@ class AppHandler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
             if length <= 0 or length > ANALYTICS_MAX_BODY_BYTES:
                 raise ValueError("invalid body length")
-            payload = json.loads(self.rfile.read(length))
+            raw_body = self.rfile.read(length)
+        except ValueError:
+            self.send_json(400, {"ok": False, "message": "统计请求格式无效"})
+            return
+        forwarded_ip = self.headers.get("CF-Connecting-IP", self.client_address[0])
+        client_ip = normalized_client_ip(forwarded_ip, self.client_address[0])
+        if BOT_USER_AGENT_RE.search(self.headers.get("User-Agent", "")):
+            self.send_bytes(204, b"", "text/plain; charset=utf-8")
+            return
+        if not analytics_request_allowed(client_ip):
+            self.send_json(429, {"ok": False, "message": "统计请求过于频繁"})
+            return
+        try:
+            payload = json.loads(raw_body)
             session_id = payload.get("session_id")
             active_seconds = payload.get("active_seconds")
             if not isinstance(session_id, str) or not isinstance(active_seconds, int) or isinstance(active_seconds, bool):
                 raise ValueError("invalid analytics payload")
-            forwarded_ip = self.headers.get("CF-Connecting-IP", self.client_address[0])
-            client_ip = normalized_client_ip(forwarded_ip, self.client_address[0])
             record_analytics_event(
                 ANALYTICS_DB_FILE,
                 get_analytics_secret(),
@@ -834,11 +1006,19 @@ class AppHandler(BaseHTTPRequestHandler):
         self.send_bytes(204, b"", "text/plain; charset=utf-8")
 
     def log_message(self, format_string: str, *args: Any) -> None:
-        print(f"[{self.log_date_time_string()}] {format_string % args}")
+        status = str(args[1]) if len(args) > 1 else ""
+        if self.path.startswith("/api/analytics/session") and status.startswith("2"):
+            return
+        get_access_logger().info("%s %s", self.client_address[0], format_string % args)
 
 
 class AppServer(ThreadingHTTPServer):
     allow_reuse_address = False
+
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        if isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError)):
+            return
+        super().handle_error(request, client_address)
 
     def server_bind(self) -> None:
         if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
@@ -847,7 +1027,7 @@ class AppServer(ThreadingHTTPServer):
 
 
 def run_self_test() -> None:
-    global UPSTREAM_NEXT_REQUEST_AT
+    global LAST_MANUAL_REFRESH_AT, UPSTREAM_NEXT_REQUEST_AT
     assert classify("【Chat GP-T Free号】已绑手机，可用Codex", "gpt低价") == "GPT Free"
     assert classify("低价 Plus成品号（登录codex要接码）", "PLUS") == "GPT Plus · 未接码"
     assert classify("Plus 已接码成品号", "PLUS") == "GPT Plus · 已接码"
@@ -858,11 +1038,14 @@ def run_self_test() -> None:
     assert classify("一键部署本地中转站", "K12", "resource") == "资源 · K12"
     assert classify("【教程】未接码plus gpt号接码并导入教程", "GPT") == "教程 · GPT"
     assert classify("美国实体卡长效接码codex绑定注册通用 PLUS接码", "接码") == "Codex 接码"
+    assert classify("长效 周额team", "K12") == "OpenAI Team"
     assert classify("Codex Free(Gmail注册)", "Gpt Free") == "GPT Free"
     assert canonical_name(" Plus 成品号！ ") == canonical_name("plus-成品号")
     CACHE.update({"stored_at": time.monotonic(), "payload": {"ok": True, "marker": "shared-cache"}})
+    LAST_MANUAL_REFRESH_AT = time.monotonic()
     assert get_inventory(force=True)["marker"] == "shared-cache"
     CACHE.update({"stored_at": 0.0, "payload": None})
+    LAST_MANUAL_REFRESH_AT = 0.0
     assert 240 <= CACHE_SECONDS < REFRESH_SECONDS
     UPSTREAM_NEXT_REQUEST_AT = 0.0
     started_at = time.monotonic()
@@ -870,7 +1053,7 @@ def run_self_test() -> None:
     wait_for_upstream_slot()
     assert time.monotonic() - started_at >= UPSTREAM_MIN_INTERVAL * 0.9
     UPSTREAM_NEXT_REQUEST_AT = 0.0
-    print("SELF_TEST_OK: 15 checks")
+    print("SELF_TEST_OK: 16 checks")
 
 
 def find_server(host: str, preferred_port: int) -> ThreadingHTTPServer:

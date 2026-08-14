@@ -21,14 +21,6 @@
   --font-data: "Bahnschrift", "Segoe UI Variable", "Microsoft YaHei UI", sans-serif;
 }
 
-@font-face {
-  font-family: "Receipt Display";
-  src: url("/assets/NotoSansSC-Bold.otf") format("opentype");
-  font-style: normal;
-  font-weight: 700;
-  font-display: swap;
-}
-
 * {
   box-sizing: border-box;
 }
@@ -135,11 +127,11 @@ p {
 
 h1 {
   margin-bottom: 2px;
-  font-size: clamp(2.6rem, 6vw, 4.8rem);
-  font-family: "Receipt Display", var(--font-ui);
+  font-size: 4.8rem;
+  font-family: var(--font-ui);
   font-weight: 700;
   line-height: 0.98;
-  letter-spacing: -0.035em;
+  letter-spacing: 0;
   -webkit-mask-image: url("/assets/ink-mask.svg");
   -webkit-mask-size: 320px 140px;
   -webkit-mask-repeat: repeat;
@@ -210,7 +202,7 @@ h1 {
   color: var(--cloud-deep);
   align-items: center;
   gap: 6px;
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 800;
   line-height: 1.2;
   white-space: nowrap;
@@ -240,7 +232,7 @@ h1 {
 .offer-copy small {
   margin-top: 4px;
   color: var(--muted);
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 700;
   white-space: nowrap;
 }
@@ -257,7 +249,7 @@ h1 {
 
 .offer-price > span {
   color: var(--cloud-deep);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 800;
   line-height: 1.25;
 }
@@ -386,7 +378,7 @@ h1 {
   background: url("/assets/stamp-frame.svg") center / 100% 100% no-repeat;
   color: var(--blue);
   font-weight: 850;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   transform: rotate(-1deg);
 }
 
@@ -433,7 +425,7 @@ h1 {
   align-items: center;
   justify-content: center;
   gap: 12px;
-  font-size: clamp(1.25rem, 2.2vw, 1.65rem);
+  font-size: 1.45rem;
 }
 
 .control-key-main > span {
@@ -572,9 +564,9 @@ button.control-key-primary:hover {
 
 .section-heading h2 {
   margin-bottom: 0;
-  font-size: clamp(1.6rem, 3vw, 2.2rem);
+  font-size: 2rem;
   line-height: 1.15;
-  letter-spacing: -0.025em;
+  letter-spacing: 0;
 }
 
 .section-heading p {
@@ -634,11 +626,11 @@ button.control-key-primary:hover {
   align-self: center;
   margin: 8px 0 2px;
   font-family: var(--font-data);
-  font-size: clamp(2rem, 3.6vw, 3.1rem);
+  font-size: 2.6rem;
   font-variant-numeric: tabular-nums;
   font-weight: 900;
   line-height: 1;
-  letter-spacing: -0.03em;
+  letter-spacing: 0;
 }
 
 .cheap-meta {
@@ -731,6 +723,15 @@ button.control-key-primary:hover {
   text-decoration-color: #666d78;
 }
 
+.product-row.is-stale {
+  color: #5d626b;
+  background: #f7f3e8;
+}
+
+.product-row.is-stale .price {
+  color: var(--warning);
+}
+
 .product-main {
   min-width: 0;
 }
@@ -801,6 +802,22 @@ button.control-key-primary:hover {
   color: var(--muted);
   font-weight: 700;
   text-align: center;
+}
+
+.group-expand {
+  width: 100%;
+  min-height: 48px;
+  border: 1px solid var(--line);
+  border-top: 0;
+  border-radius: 0;
+  background: #f1f3f5;
+  color: var(--blue-dark);
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.group-expand:hover {
+  background: #e7edf8;
 }
 
 .shop-list {
@@ -987,7 +1004,89 @@ footer p {
   }
 
   h1 {
-    font-size: clamp(2.55rem, 14vw, 4rem);
+    font-size: 3rem;
+  }
+
+  .masthead {
+    gap: 10px;
+    padding-bottom: 14px;
+  }
+
+  .cloud-offer {
+    grid-template-columns: minmax(0, 1fr) 88px 38px;
+    height: 60px;
+  }
+
+  .offer-copy {
+    padding: 5px 8px 5px 10px;
+  }
+
+  .offer-copy strong {
+    margin-top: 2px;
+    font-size: 13px;
+  }
+
+  .offer-copy small {
+    margin-top: 2px;
+  }
+
+  .offer-price {
+    display: flex;
+    padding: 5px;
+    gap: 4px;
+    text-align: left;
+  }
+
+  .offer-price > span {
+    display: block;
+    font-size: 9px;
+  }
+
+  .offer-price em {
+    margin-top: 0;
+    font-size: 23px;
+  }
+
+  .masthead-status {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .sync-stamp {
+    min-width: 118px;
+    padding: 8px 14px;
+    text-align: center;
+  }
+
+  main {
+    display: flex;
+    flex-direction: column;
+  }
+
+  #cheapest {
+    order: 1;
+  }
+
+  .notice {
+    order: 2;
+  }
+
+  .controls {
+    order: 3;
+  }
+
+  #comparisons {
+    order: 4;
+  }
+
+  #inventory {
+    order: 5;
+  }
+
+  .shop-section {
+    order: 6;
   }
 
   .control-grid {
@@ -1010,6 +1109,7 @@ footer p {
 
   .control-key-main {
     gap: 7px;
+    font-size: 1.12rem;
   }
 
   .key-icon {
@@ -1048,18 +1148,41 @@ footer p {
   }
 
   .cheapest-list {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .cheap-pick,
   .cheap-pick:nth-child(2) {
-    min-height: 128px;
-    border-right: 0;
+    min-height: 104px;
+    padding: 10px;
+    border-right: 1px dashed var(--line);
     border-bottom: 1px dashed var(--line);
   }
 
-  .cheap-pick:last-child {
+  .cheap-pick:nth-child(even) {
+    border-right: 0;
+  }
+
+  .cheap-pick:nth-last-child(-n + 2) {
     border-bottom: 0;
+  }
+
+  .cheap-rank {
+    width: 26px;
+    height: 26px;
+  }
+
+  .cheap-group {
+    font-size: 0.92rem;
+  }
+
+  .cheap-price {
+    margin-top: 5px;
+    font-size: 1.75rem;
+  }
+
+  .cheap-meta {
+    font-size: 0.75rem;
   }
 
   .row-head {

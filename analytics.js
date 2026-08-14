@@ -49,15 +49,18 @@
 
     function handleVisibilityChange() {
       updateVisibleTime();
-      visibleSince = environment.isVisible() ? environment.now() : null;
-      report(false);
+      const visible = environment.isVisible();
+      visibleSince = visible ? environment.now() : null;
+      if (visible) report(false);
     }
 
     function start() {
       if (started) return;
       started = true;
       report(false);
-      environment.setInterval(() => report(false), 15_000);
+      environment.setInterval(() => {
+        if (environment.isVisible()) report(false);
+      }, 15_000);
       environment.addEventListener("visibilitychange", handleVisibilityChange);
       environment.addEventListener("pagehide", () => report(true));
     }

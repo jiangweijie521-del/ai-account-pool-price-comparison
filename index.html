@@ -5,11 +5,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light">
     <meta name="theme-color" content="#f3f6f9">
-    <title>库存比价台</title>
+    <title>号池精选｜ChatGPT Plus、Codex 账号库存与价格实时比价</title>
+    <meta name="description" content="聚合多家公开号池的 ChatGPT Plus、Codex、OpenAI K12、Claude、Gemini 等账号库存与价格，默认只看有货，支持同款多店比价与自动刷新。">
+    <link rel="canonical" href="https://stock.ultraai.site/">
+    <meta property="og:type" content="website">
+    <meta property="og:locale" content="zh_CN">
+    <meta property="og:site_name" content="号池精选">
+    <meta property="og:title" content="号池精选｜AI 账号库存与价格实时比价">
+    <meta property="og:description" content="ChatGPT Plus、Codex、OpenAI K12、Claude、Gemini 等账号库存与价格聚合比价，默认只看有货。">
+    <meta property="og:url" content="https://stock.ultraai.site/">
     <link rel="icon" href="/assets/stamp-frame.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/styles.css?v=20260814-tencent-cloud-ad-v1">
-    <script src="/analytics.js?v=20260807-analytics-v1" defer></script>
-    <script src="/app.js?v=20260807-analytics-v1" defer></script>
+    <script type="application/ld+json">{"@context":"https://schema.org","@type":"WebSite","name":"号池精选","alternateName":"库存比价台","url":"https://stock.ultraai.site/","inLanguage":"zh-CN","description":"ChatGPT Plus、Codex、OpenAI K12、Claude、Gemini 等 AI 账号库存与价格实时比价。"}</script>
+    <link rel="stylesheet" href="/styles.css?v=20260815-p1p2-v1">
+    <script src="/analytics.js?v=20260815-p1p2-v1" defer></script>
+    <script src="/app.js?v=20260815-p1p2-v1" defer></script>
   </head>
   <body>
     <!--
@@ -32,22 +41,22 @@
           class="cloud-offer"
           href="https://tencent.ultraai.site"
           target="_blank"
-          rel="noopener noreferrer"
-          aria-label="腾讯云国际充值，官方渠道日常 5.5 折，低至 2.8 折，打开充值页面"
+          rel="sponsored noopener noreferrer"
+          aria-label="推广：腾讯云国际充值，充值 5.5 折，最低享 2.8 折，打开充值页面"
         >
           <span class="offer-copy">
-            <span class="offer-kicker">TENCENT CLOUD · 官方渠道</span>
+            <span class="offer-kicker">推广 · TENCENT CLOUD</span>
             <strong>腾讯云国际充值</strong>
-            <small>日常充值 5.5 折</small>
+            <small>充值 5.5 折</small>
           </span>
           <span class="offer-price">
-            <span>限时<br>低至</span>
+            <span>最低<br>享</span>
             <strong><em>2.8</em><b>折</b></strong>
           </span>
           <span class="offer-action" aria-hidden="true"><span>去充值</span><i>→</i></span>
         </a>
         <div class="masthead-status">
-          <time id="updatedAt" datetime="">正在读取最新库存…</time>
+          <time id="updatedAt" datetime="">正在检查最新库存…</time>
           <p id="syncStamp" class="sync-stamp" data-state="loading">连接中</p>
         </div>
       </header>
@@ -101,7 +110,7 @@
         <section id="cheapest" class="receipt-section" aria-labelledby="cheapestTitle" hidden>
           <div class="section-heading">
             <h2 id="cheapestTitle">今日低价</h2>
-            <p>重点类别当前最低价</p>
+            <p>仅采用本次成功读取的有货数据</p>
           </div>
           <div id="cheapestList" class="cheapest-list"></div>
         </section>
@@ -135,7 +144,7 @@
 
       <footer>
         <p>价格和库存来自店铺公开接口；同类分组与同款识别是关键词辅助，不代表规格、质保、售后或质量完全相同。购买前请打开商品详情核对。</p>
-        <p>本页不收集账号、支付信息或原始 IP；访问统计只保存每日匿名标识和近似停留时长。</p>
+        <p>本页不收集账号、支付信息或原始 IP；访问统计是基于 JavaScript 上报的匿名估算，可能受拦截、机器人过滤和网络中断影响。</p>
       </footer>
     </div>
 

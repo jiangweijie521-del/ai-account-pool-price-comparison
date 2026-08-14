@@ -12,10 +12,15 @@ analytics.sqlite3-shm
 analytics.sqlite3-wal
 analytics-secret.key
 analytics-admin-password.txt
+monitor-state.json
+backups/
 *.log
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.venv/
+node_modules/
+cloudflare/node_modules/
 
 # Local tooling and deployment evidence
 .agents/

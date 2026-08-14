@@ -50,6 +50,12 @@ test("tracker reports one session and only counts visible time", async () => {
   now = 30_000;
   intervalCallback();
   await Promise.resolve();
+  assert.equal(requests.length, 2, "hidden tabs must not keep posting analytics");
+
+  visible = true;
+  listeners.visibilitychange();
+  await Promise.resolve();
+  assert.equal(requests.length, 3, "reporting resumes when the page becomes visible");
   assert.equal(JSON.parse(requests.at(-1).options.body).active_seconds, 15);
 });
 

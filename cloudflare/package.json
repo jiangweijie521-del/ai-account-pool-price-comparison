@@ -1,0 +1,14 @@
+{
+  "name": "stock-comparison-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prepare:public": "node prepare-public.mjs",
+    "test": "node --test worker.test.mjs",
+    "deploy:dry-run": "npm run prepare:public && wrangler deploy --dry-run",
+    "deploy": "npm run prepare:public && wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "4.123.0"
+  }
+}

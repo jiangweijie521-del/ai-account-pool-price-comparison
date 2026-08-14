@@ -53,6 +53,7 @@ test("classify preserves the existing product grouping contract", () => {
     [["【教程】未接码plus gpt号接码并导入教程", "GPT"], "教程 · GPT"],
     [["美国实体卡长效接码codex绑定注册通用 PLUS接码", "接码"], "Codex 接码"],
     [["Codex Free(Gmail注册)", "Gpt Free"], "GPT Free"],
+    [["长效 周额team", "K12"], "OpenAI Team"],
   ];
 
   for (const [args, expected] of cases) {
@@ -146,6 +147,7 @@ test("collectInventory aggregates a complete upstream shop response", async () =
   assert.equal(payload.partial, false);
   assert.equal(payload.shops[0].nickname, "远端测试店");
   assert.equal(payload.items[0].group, "GPT Free");
+  assert.equal(payload.items.every((item) => item.fetched_at && item.stale === false), true);
   assert.equal(calls.length, 5);
 });
 
@@ -161,13 +163,28 @@ test("sortItems keeps available products before unavailable products in a group"
   assert.equal(items[0].available, true);
 });
 
+test("sortItems keeps fresh products before cheaper stale products", () => {
+  const items = [
+    { group_rank: 1, group: "GPT Plus", available: true, stale: true, price: 1, shop: "甲" },
+    { group_rank: 1, group: "GPT Plus", available: true, stale: false, price: 2, shop: "乙" },
+  ];
+
+  worker.sortItems(items);
+
+  assert.equal(items[0].stale, false);
+});
+
 test("handleRequest exposes a production health endpoint", async () => {
   assert.equal(typeof worker.handleRequest, "function");
 
   const response = await worker.handleRequest(new Request("https://stock.example/api/health"), {}, {});
 
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { ok: true, service: "stock-comparison", version: "2026-08-04.1" });
+  const payload = await response.json();
+  assert.equal(payload.ok, true);
+  assert.equal(payload.service, "stock-comparison");
+  assert.ok(payload.version);
+  assert.ok(payload.revision);
 });
 
 test("handleRequest reuses the shared inventory cache", async () => {
@@ -185,7 +202,9 @@ test("handleRequest reuses the shared inventory cache", async () => {
   assert.equal(first.status, 200);
   assert.equal(first.headers.get("X-Inventory-Cache"), "MISS");
   assert.equal(second.headers.get("X-Inventory-Cache"), "HIT");
-  assert.equal((await second.json()).summary.total, 1);
+  const payload = await second.json();
+  assert.equal(payload.summary.total, 1);
+  assert.equal(payload.delivery.refresh_status, "hit");
   assert.equal(upstream.count(), 5);
 });
 
@@ -203,7 +222,45 @@ test("handleRequest keeps manual refreshes inside the shared cache window", asyn
 
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("X-Inventory-Cache"), "HIT");
+  assert.equal((await response.json()).delivery.refresh_status, "cooldown");
   assert.equal(upstream.count(), 5);
+});
+
+test("handleRequest bypasses cache for a manual refresh after cooldown", async () => {
+  const upstream = createUpstreamFixture();
+  const cache = createMemoryCache();
+  const shop = { name: "测试店", token: "SHOP1", url: "https://pay.ldxp.cn/shop/SHOP1" };
+  const pending = [];
+  const context = { waitUntil: (promise) => pending.push(promise) };
+  let now = Date.now();
+  const dependencies = { fetchImpl: upstream.fetch, cache, shopsConfig: [shop], now: () => now };
+
+  const first = await worker.handleRequest(new Request("https://stock.example/api/inventory"), {}, context, dependencies);
+  const generatedAt = Date.parse((await first.json()).generated_at);
+  await Promise.all(pending);
+  now = generatedAt + 31_000;
+  const refreshed = await worker.handleRequest(new Request("https://stock.example/api/inventory?refresh=1"), {}, context, dependencies);
+
+  assert.equal(refreshed.headers.get("X-Inventory-Cache"), "BYPASS");
+  assert.equal((await refreshed.json()).delivery.refresh_status, "refreshed");
+  assert.equal(upstream.count(), 10);
+});
+
+test("analytics endpoint is a safe no-op in Worker fallback", async () => {
+  const response = await worker.handleRequest(
+    new Request("https://stock.example/api/analytics/session", { method: "POST", body: "{}" }),
+    {},
+    {},
+  );
+
+  assert.equal(response.status, 204);
+});
+
+test("admin endpoint clearly reports that fallback has no admin", async () => {
+  const response = await worker.handleRequest(new Request("https://stock.example/admin"), {}, {});
+
+  assert.equal(response.status, 404);
+  assert.match(await response.text(), /回退版本不提供访问分析后台/);
 });
 
 test("handleRequest serves static assets with production security headers", async () => {
@@ -221,4 +278,18 @@ test("handleRequest serves static assets with production security headers", asyn
   assert.match(await response.text(), /库存比价台/);
   assert.equal(response.headers.get("X-Content-Type-Options"), "nosniff");
   assert.match(response.headers.get("Content-Security-Policy"), /default-src 'self'/);
+});
+
+test("versioned Worker assets use immutable caching", async () => {
+  const env = {
+    ASSETS: {
+      fetch: async () => new Response("body { color: black; }", {
+        headers: { "Content-Type": "text/css; charset=utf-8" },
+      }),
+    },
+  };
+
+  const response = await worker.handleRequest(new Request("https://stock.example/styles.css?v=release-1"), env, {});
+
+  assert.equal(response.headers.get("Cache-Control"), "public, max-age=31536000, immutable");
 });

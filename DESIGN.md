@@ -17,11 +17,11 @@ colors:
   danger-ink: "#a11c1c"
 typography:
   display:
-    fontFamily: "Receipt Display, Segoe UI Variable, Microsoft YaHei UI, PingFang SC, sans-serif"
-    fontSize: "clamp(2.6rem, 6vw, 4.8rem)"
+    fontFamily: "Segoe UI Variable, Microsoft YaHei UI, PingFang SC, sans-serif"
+    fontSize: "4.8rem desktop / 3rem mobile"
     fontWeight: 700
     lineHeight: 0.98
-    letterSpacing: "-0.035em"
+    letterSpacing: "0"
   body:
     fontFamily: "Segoe UI Variable, Microsoft YaHei UI, PingFang SC, sans-serif"
     fontSize: "18px"
@@ -112,7 +112,7 @@ components:
 
 ## Typography
 
-**Display Font:** Receipt Display（本地 Noto Sans SC Bold 文件，系统中文无衬线回退）  
+**Display Font:** Segoe UI Variable / Microsoft YaHei UI / PingFang SC（系统字体，避免阻塞大字体下载）
 **Body Font:** Segoe UI Variable / Microsoft YaHei UI / PingFang SC  
 **Data Font:** Bahnschrift（中文回退到正文栈）
 
@@ -120,8 +120,8 @@ components:
 
 ### Hierarchy
 
-- **Display**（700，`clamp(2.6rem, 6vw, 4.8rem)`，0.98）：页面唯一主标题。
-- **Section Headline**（700–900，`clamp(1.6rem, 3vw, 2.2rem)`，1.15）：今日低价、同款比价和分类库存。
+- **Display**（700，桌面 4.8rem / 移动端 3rem，0.98）：页面唯一主标题。
+- **Section Headline**（700–900，2rem，1.15）：今日低价、同款比价和分类库存。
 - **Group Title**（700–850，1.35rem，1.3）：商品分类和同款标题。
 - **Body**（400，18px，1.55）：主要说明、商品名与控件文案。
 - **Label**（700–800，0.72–0.9rem）：来源、标签、表头和状态补充。
@@ -133,9 +133,9 @@ components:
 
 ## Layout
 
-桌面以一张最大 1480px 的票据为唯一主表面，外边距 16px，内部横向 42px、纵向 24px。首屏顺序固定为标题/同步状态、三枚收银按键、搜索与同步摘要、今日低价、同款或分类清单起点。
+桌面以一张最大 1480px 的票据为唯一主表面，外边距 16px，内部横向 42px、纵向 24px。桌面首屏顺序为标题/同步状态、三枚收银按键、搜索与同步摘要、今日低价、同款或分类清单起点；760px 以下将今日低价提前到控制区之前，保证首屏出现真实价格。
 
-低价登记条在宽屏使用四列；1050px 以下改为两列。商品行在桌面使用商品、店铺、说明、库存、价格五列，其中商品列获得最多宽度，库存与价格右对齐。760px 以下隐藏表头并将每项重排为双列票据条：商品和标签跨满宽度，店铺在左，价格与库存在右，不产生横向滚动。
+低价登记条在宽屏使用四列；1050px 以下改为两列，移动端仍保持两列紧凑价签。商品行在桌面使用商品、店铺、说明、库存、价格五列，其中商品列获得最多宽度，库存与价格右对齐。760px 以下隐藏表头并将每项重排为双列票据条：商品和标签跨满宽度，店铺在左，价格与库存在右，不产生横向滚动；超过 6 件的分类提供 48px 高展开按钮。
 
 纵向节奏使用 14px 控件间距、24px 主要内边距与 30px 区段间隔。虚线分联和实线组头共同承担信息层级。
 
@@ -169,7 +169,7 @@ components:
 
 - **Structure:** 四个类别赢家共享一个外框，虚线列分隔；第一项使用安全黄整面，其他项保持票据纸。
 - **Data:** 类别、排名、价格、店铺和库存均为真实文本；价格使用表格数字。
-- **Responsive:** 1050px 两列，760px 单列。
+- **Responsive:** 1050px 以下两列，移动端压缩字号和间距以保持首屏价格可见。
 
 ### Ledger Rows
 
@@ -200,4 +200,3 @@ components:
 - **Don't** 把核心文字做进图片，或以纸张纹理降低对比度。
 - **Don't** 在移动端保留需要横向拖动的桌面表格。
 - **Don't** 为内部区块增加独立阴影；整张票据是唯一被抬起的表面。
-

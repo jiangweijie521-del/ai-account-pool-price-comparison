@@ -1,6 +1,7 @@
 const TYPE_LABELS = { card: "卡密", article: "文章", resource: "资源", equity: "权益" };
 const API_ROOT = "https://pay.ldxp.cn";
-const REFRESH_SECONDS = 60;
+const REFRESH_SECONDS = 300;
+const MANUAL_REFRESH_COOLDOWN_MS = 30_000;
 const PAGE_SIZE = 200;
 const MAX_PAGES = 2;
 const GOODS_TYPES = ["card", "article", "resource", "equity"];
@@ -11,6 +12,7 @@ const SHOPS = [
   { name: "codex嘻嘻", token: "BH4F39F6", url: `${API_ROOT}/shop/BH4F39F6` },
 ];
 const LAST_GOOD = new Map();
+let inventoryRefreshPromise = null;
 const GROUP_ORDER = [
   "GPT Free",
   "GPT Plus · 已接码",
@@ -102,8 +104,8 @@ export function classify(name, category, goodsType = "card") {
 
   if (text.includes("openai普通账号") || (text.includes("白号") && ["gpt", "openai", "codex"].some((term) => text.includes(term)))) return "GPT Free";
   if (text.includes("codex") && ["接码", "手机验证", "实体卡"].some((term) => text.includes(term))) return "Codex 接码";
+  if (nameText.includes("team") || nameText.includes("团队") || categoryText.includes("team")) return "OpenAI Team";
   if (nameText.includes("k12") || categoryText.includes("k12")) return "OpenAI K12";
-  if (/\bteam\b/.test(nameText) || nameText.includes("团队") || categoryText.includes("team")) return "OpenAI Team";
   if (categoryText.includes("gemini") || categoryText.includes("反重力")) return "Gemini";
   if (categoryText.includes("claude")) return "Claude";
   if (categoryText.includes("grok")) return "Grok";
@@ -245,6 +247,8 @@ async function fetchShop(fetchImpl, shop) {
       }
     }
   }
+  const fetchedAt = new Date().toISOString();
+  for (const item of items) Object.assign(item, { stale: false, fetched_at: fetchedAt });
   return {
     name: shop.name,
     nickname: cleanText(info.nickname) || shop.name,
@@ -253,6 +257,7 @@ async function fetchShop(fetchImpl, shop) {
     ok: true,
     stale: false,
     message: "读取成功",
+    fetched_at: fetchedAt,
     declared_count: Number(info.goods_count) || 0,
     item_count: items.length,
     items,
@@ -268,6 +273,7 @@ function failureMessage(error) {
 export function sortItems(items) {
   return items.sort((left, right) => left.group_rank - right.group_rank
     || left.group.localeCompare(right.group, "zh-CN")
+    || Number(Boolean(left.stale)) - Number(Boolean(right.stale))
     || Number(right.available) - Number(left.available)
     || left.price - right.price
     || left.shop.localeCompare(right.shop, "zh-CN"));
@@ -284,7 +290,9 @@ export async function collectInventory(fetchImpl = fetch, shopsConfig = SHOPS) {
       const message = failureMessage(error);
       errors.set(shop.token, message);
       if (LAST_GOOD.has(shop.token)) {
-        return { ...structuredClone(LAST_GOOD.get(shop.token)), ok: false, stale: true, message: `${message}，显示上次数据` };
+        const stale = { ...structuredClone(LAST_GOOD.get(shop.token)), ok: false, stale: true, message: `${message}，显示上次数据` };
+        for (const item of stale.items) Object.assign(item, { stale: true, fetched_at: item.fetched_at || stale.fetched_at });
+        return stale;
       }
       return {
         name: shop.name,
@@ -294,6 +302,7 @@ export async function collectInventory(fetchImpl = fetch, shopsConfig = SHOPS) {
         ok: false,
         stale: false,
         message,
+        fetched_at: null,
         declared_count: 0,
         item_count: 0,
         items: [],
@@ -302,6 +311,9 @@ export async function collectInventory(fetchImpl = fetch, shopsConfig = SHOPS) {
   }));
 
   const items = results.flatMap((shop) => shop.items);
+  for (const shop of results) {
+    for (const item of shop.items) Object.assign(item, { stale: Boolean(shop.stale), fetched_at: item.fetched_at || shop.fetched_at });
+  }
   const duplicateShops = new Map();
   for (const item of items) {
     if (item.canonical.length < 8) continue;
@@ -344,8 +356,14 @@ function jsonResponse(payload, status = 200) {
   });
 }
 
-function inventoryResponse(payload, marker) {
-  return new Response(JSON.stringify(payload), {
+function inventoryResponse(payload, marker, refreshStatus, now, retryAfterSeconds = 0) {
+  const delivered = structuredClone(payload);
+  delivered.delivery = {
+    refresh_status: refreshStatus,
+    cache_age_seconds: Math.max(0, Math.round((now - Date.parse(payload.generated_at)) / 1000)),
+    retry_after_seconds: Math.max(0, Math.ceil(retryAfterSeconds)),
+  };
+  return new Response(JSON.stringify(delivered), {
     status: payload.ok ? 200 : 502,
     headers: {
       "Content-Type": "application/json; charset=utf-8",
@@ -360,32 +378,66 @@ function inventoryResponse(payload, marker) {
 export async function handleRequest(request, env, ctx, dependencies = {}) {
   const url = new URL(request.url);
   if (url.pathname === "/api/health") {
-    return jsonResponse({ ok: true, service: "stock-comparison", version: "2026-08-04.1" });
+    return jsonResponse({
+      ok: true,
+      service: "stock-comparison",
+      version: "2026-08-15.1-worker",
+      revision: env?.SERVICE_REVISION || "worker-fallback",
+    });
+  }
+  if (url.pathname === "/api/analytics/session" && request.method === "POST") {
+    return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
+  }
+  if (url.pathname === "/admin" || url.pathname === "/admin/" || url.pathname === "/admin.html") {
+    return new Response("Cloudflare 回退版本不提供访问分析后台。", {
+      status: 404,
+      headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" },
+    });
   }
   if (url.pathname === "/api/inventory") {
     const force = url.searchParams.get("refresh") === "1";
+    const now = dependencies.now?.() ?? Date.now();
     const cache = dependencies.cache ?? globalThis.caches?.default;
     const cacheKey = new Request("https://stock-comparison-cache.local/api/inventory");
     if (cache) {
       const cached = await cache.match(cacheKey);
-      if (cached) return inventoryResponse(await cached.json(), "HIT");
+      if (cached) {
+        const cachedPayload = await cached.json();
+        const cacheAge = Math.max(0, now - Date.parse(cachedPayload.generated_at));
+        if (!force) return inventoryResponse(cachedPayload, "HIT", "hit", now);
+        if (cacheAge < MANUAL_REFRESH_COOLDOWN_MS) {
+          return inventoryResponse(
+            cachedPayload,
+            "HIT",
+            "cooldown",
+            now,
+            (MANUAL_REFRESH_COOLDOWN_MS - cacheAge) / 1000,
+          );
+        }
+      }
     }
 
-    const payload = await collectInventory(dependencies.fetchImpl ?? fetch, dependencies.shopsConfig ?? SHOPS);
+    if (!inventoryRefreshPromise) {
+      inventoryRefreshPromise = collectInventory(dependencies.fetchImpl ?? fetch, dependencies.shopsConfig ?? SHOPS)
+        .finally(() => { inventoryRefreshPromise = null; });
+    }
+    const payload = await inventoryRefreshPromise;
     if (payload.ok && cache) {
       const cachedResponse = new Response(JSON.stringify(payload), {
-        headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "s-maxage=45" },
+        headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "s-maxage=290" },
       });
       const cacheWrite = cache.put(cacheKey, cachedResponse);
       if (ctx?.waitUntil) ctx.waitUntil(cacheWrite);
       else await cacheWrite;
     }
-    return inventoryResponse(payload, force ? "BYPASS" : "MISS");
+    return inventoryResponse(payload, force ? "BYPASS" : "MISS", "refreshed", now);
   }
   if (env?.ASSETS?.fetch) {
     const asset = await env.ASSETS.fetch(request);
     const headers = new Headers(asset.headers);
-    headers.set("Cache-Control", url.pathname === "/" || url.pathname.endsWith(".html") ? "no-store" : "public, max-age=86400");
+    const immutable = Boolean(url.search)
+      && (url.pathname.endsWith(".css") || url.pathname.endsWith(".js") || url.pathname.startsWith("/assets/"));
+    headers.set("Cache-Control", immutable ? "public, max-age=31536000, immutable" : "no-store");
     headers.set("X-Content-Type-Options", "nosniff");
     headers.set("Referrer-Policy", "no-referrer");
     headers.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");

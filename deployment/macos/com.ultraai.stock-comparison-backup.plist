@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.ultraai.stock-comparison-backup</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/YOUR_USER/.local/bin/python3.11</string>
+    <string>/Users/YOUR_USER/stock-comparison/ops.py</string>
+    <string>backup</string>
+    <string>--database</string>
+    <string>/Users/YOUR_USER/stock-comparison/analytics.sqlite3</string>
+    <string>--backup-dir</string>
+    <string>/Users/YOUR_USER/stock-comparison/backups</string>
+    <string>--keep</string>
+    <string>14</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/YOUR_USER/stock-comparison</string>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>3</integer>
+    <key>Minute</key>
+    <integer>20</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/dev/null</string>
+  <key>StandardErrorPath</key>
+  <string>/dev/null</string>
+</dict>
+</plist>

@@ -9,6 +9,13 @@ LAUNCHER = ROOT / "启动库存比价.bat"
 
 
 def main() -> None:
+    raw = LAUNCHER.read_bytes()
+    assert all(byte < 128 for byte in raw), "launcher must stay ASCII-only"
+    assert raw.count(b"\n") == raw.count(b"\r\n"), "launcher must use CRLF line endings"
+    if os.name != "nt":
+        print("LAUNCHER_STATIC_TEST_OK: Windows execution is covered by the CI windows job")
+        return
+
     with tempfile.TemporaryDirectory() as temp_dir:
         probe = Path(temp_dir) / "py.cmd"
         probe.write_bytes(b"@echo off\r\necho PROBE_PY_ARGS=%*\r\nexit /b 0\r\n")
@@ -33,9 +40,6 @@ def main() -> None:
     assert "server.py" in output and "--open" in output, output
     assert "not recognized" not in output and "不是内部或外部命令" not in output, output
 
-    raw = LAUNCHER.read_bytes()
-    assert all(byte < 128 for byte in raw), "launcher must stay ASCII-only"
-    assert raw.count(b"\n") == raw.count(b"\r\n"), "launcher must use CRLF line endings"
     print("LAUNCHER_TEST_OK: ASCII + CRLF + parsed arguments")
 
 

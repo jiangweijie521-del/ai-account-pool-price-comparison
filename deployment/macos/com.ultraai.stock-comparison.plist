@@ -6,7 +6,7 @@
   <string>com.ultraai.stock-comparison</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/bin/python3</string>
+    <string>/Users/YOUR_USER/.local/bin/python3.11</string>
     <string>/Users/YOUR_USER/stock-comparison/server.py</string>
     <string>--host</string>
     <string>127.0.0.1</string>

@@ -4,7 +4,7 @@ ChatGPT Plus、Codex、OpenAI K12、Claude、Gemini 账号与反代号池的实�
 
 [![Live Demo](https://img.shields.io/badge/在线使用-stock.ultraai.site-0b45c7)](https://stock.ultraai.site)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB)](https://www.python.org/)
 [![Vanilla JS](https://img.shields.io/badge/JavaScript-Vanilla-F7DF1E)](app.js)
 
 在线使用：[https://stock.ultraai.site](https://stock.ultraai.site)
@@ -25,13 +25,13 @@ ChatGPT Plus、Codex、OpenAI K12、Claude、Gemini 账号与反代号池的实�
 
 - 聚合 4 家公开店铺的商品、价格、库存和商品链接。
 - 默认只展示有货商品，缺货商品不会进入默认列表。
-- 同类商品按价格从低到高排序，最低价有明显标记。
+- 同类商品按新鲜度和价格排序，旧数据会标明来源时间且不会被标成最低价。
 - 自动识别相同标题的跨店商品，集中展示多店价格。
 - 支持 ChatGPT Plus、Codex、OpenAI K12、Claude、Gemini、Grok、邮箱等分类。
 - 支持按商品名、类别或店铺即时搜索。
-- 每 5 分钟自动刷新，也可手动刷新。
+- 每 5 分钟自动刷新；手动刷新会真实重读上游，并使用 30 秒全局冷却和并发合并保护数据源。
 - 上游暂时不可用时保留最近一次成功库存，并明确标记“部分同步”。
-- 提供受密码保护的访问统计后台，按天查看独立 IP 数、访问次数和停留时长。
+- 提供受密码保护的访问统计后台，按天查看估算独立 IP、访问次数和停留时长。
 - 桌面端和手机端自适应，无横向表格拖动。
 - 不收集账号、密码、支付信息或原始 IP，购买仍在原店铺完成。
 
@@ -56,7 +56,8 @@ ChatGPT Plus、Codex、OpenAI K12、Claude、Gemini 账号与反代号池的实�
 - 发布：Cloudflare HTTPS + Tunnel。
 - 可选回滚：Cloudflare Worker。
 - 数据保护：共享刷新缓存、请求节流和原子库存快照。
-- 隐私统计：SQLite、每日 HMAC 匿名访客标识和可见页面停留时长。
+- 隐私统计：SQLite、每日 HMAC 匿名访客标识、机器人过滤、滥用限流和可见页面停留时长。
+- 运维保障：滚动访问日志、SQLite 一致性备份、内外网健康与完整库存监控。
 
 ```text
 浏览器
@@ -73,6 +74,8 @@ ChatGPT Plus、Codex、OpenAI K12、Claude、Gemini 账号与反代号池的实�
 双击 `启动库存比价.bat`。浏览器会自动打开；命令窗口保持开启即可。
 
 ### macOS / Linux
+
+需要 Python 3.11 或更高版本：
 
 ```bash
 python3 server.py --open
@@ -116,9 +119,21 @@ ingress:
 python3 server.py --host 127.0.0.1 --port 18768 --exact-port
 ```
 
-macOS 可参考 `deployment/macos/com.ultraai.stock-comparison.plist` 配置 LaunchAgent。使用前把其中的 `YOUR_USER` 和项目路径替换成自己的实际路径。
+macOS 可参考 `deployment/macos/com.ultraai.stock-comparison.plist` 配置 LaunchAgent。使用前把其中的 `YOUR_USER` 和项目路径替换成自己的实际路径；示例明确使用受支持的 Python 3.11 运行时。
 
-项目保留了 `cloudflare/worker.mjs` 作为可选 Worker 实现。部分上游会对数据中心或 Worker 出口触发 ESA 人机验证，因此正式使用前必须从实际生产链路验证库存接口；若 Worker 出口受限，使用具备稳定出口的主机配合 Tunnel。访问统计后台依赖 Python 服务的本地 SQLite 持久化，当前不包含在 Worker 备用实现中。
+项目保留了 `cloudflare/worker.mjs` 作为可选 Worker 实现。部分上游会对数据中心或 Worker 出口触发 ESA 人机验证，因此正式使用前必须从实际生产链路验证库存接口；若 Worker 出口受限，使用具备稳定出口的主机配合 Tunnel。
+
+回退包从仓库源文件重新生成，不复制后台资源：
+
+```bash
+cd cloudflare
+npm ci --ignore-scripts
+npm test
+npm run deploy:dry-run
+npm run deploy
+```
+
+Worker 回退版对前端分析 POST 返回安全空响应，但不持久化统计，也不提供 `/admin`；正式后台只存在于 Python + SQLite 部署。
 
 ## 访问统计后台
 
@@ -133,40 +148,71 @@ chmod 600 analytics-admin-password.txt
 
 统计口径与隐私边界：
 
-- 独立 IP：原始 IP 经“日期 + 本机随机密钥”进行 HMAC 匿名化，同一个 IP 每天只计一次，跨天不可关联。
-- 访问次数：每次打开页面创建一个独立会话，同一 IP 一天可以有多次访问。
+- 估算独立 IP：原始 IP 经“日期 + 本机随机密钥”进行 HMAC 匿名化，同一个 IP 每天只计一次，跨天不可关联。
+- 估算访问次数：每次打开页面创建一个独立会话，同一 IP 一天可以有多次访问；相同会话标识来自不同 IP 时分别计数。
 - 停留时长：页面可见时每 15 秒上报一次，后台展示每日平均和总停留时长；关闭浏览器、断网或休眠可能造成少量误差。
+- 过滤与限流：明显机器人不会入库；单 IP 上报速率和单匿名访客每日新会话数均设上限。
 - 数据保留：默认保留 90 天；`analytics.sqlite3`、匿名化密钥和后台密码均已加入 `.gitignore`。
-- 局限：共享网络可能让多人使用同一公网 IP，爬虫访问也可能被计入，因此独立 IP 不等同于精确人数。
+- 局限：脚本拦截、共享公网 IP、未识别爬虫和网络中断都会产生误差，因此这些指标只用于趋势判断，不等同于精确人数。
 
 ## 刷新与降级策略
 
-- 所有浏览器共享 290 秒刷新冷却窗口，避免多标签页放大请求。
+- 普通读取共享 290 秒缓存；手动刷新会绕过普通缓存，但 30 秒内复用最近一次手动结果。
+- 并发刷新使用单飞锁，同一时刻只向四家店铺发起一轮采集。
 - 上游请求启动时间至少间隔 250 ms，避免瞬时突发。
 - 最近一次成功库存会原子写入 `inventory-cache.json`。
 - 持久化快照最多每 15 分钟更新一次。
-- 服务重启且上游不可用时，页面继续显示旧数据并标记店铺状态。
+- 服务重启且上游不可用时，页面继续显示旧数据、保留原始采集时间，并禁止旧数据获得最低价标记。
 - `inventory-cache.json` 不属于公开静态资源，不可通过网页访问。
 
 ## 测试
 
-后端自检与语法检查：
+安装固定版本的浏览器测试依赖：
+
+```bash
+python3.11 -m venv .venv
+.venv/bin/python -m pip install -r requirements-dev.txt
+.venv/bin/playwright install chromium
+```
+
+后端、客户端和浏览器检查：
 
 ```bash
 python3 server.py --self-test
-python3 -m unittest -v analytics_test.py
-python3 -m py_compile server.py analytics_test.py browser_test.py launcher_test.py
+python3 -m unittest -v server_test.py analytics_test.py ops_test.py
+python3 -m py_compile server.py server_test.py analytics_test.py ops.py ops_test.py browser_test.py launcher_test.py
 node --test analytics_client.test.mjs
+.venv/bin/python browser_test.py
 ```
 
 Cloudflare Worker 测试：
 
 ```bash
 cd cloudflare
-node --test worker.test.mjs
+npm ci --ignore-scripts
+npm test
+npm run deploy:dry-run
 ```
 
-浏览器端到端测试需要额外安装 Playwright；生产运行本身不需要它。
+GitHub Actions 会在 Linux 上运行 Python、Node、Worker dry-run 和 Chromium 测试，并在 Windows runner 上真实执行批处理启动器。
+
+## 备份与监控
+
+手动创建经过 SQLite 完整性校验的备份：
+
+```bash
+python3 ops.py backup --database analytics.sqlite3 --backup-dir backups --keep 14
+```
+
+同时检查本机服务和公网域名；任何一端健康失败、库存 `partial` 或新鲜店铺数不完整都会返回非零状态：
+
+```bash
+python3 ops.py monitor \
+  --base-url http://127.0.0.1:18768/ \
+  --base-url https://stock.ultraai.site/
+```
+
+`deployment/macos/` 内另有每日备份和每 5 分钟监控的 LaunchAgent 模板。运维日志会滚动保留，最近一次监控结果写入已忽略的 `monitor-state.json`。
 
 ## 项目结构
 
@@ -178,12 +224,15 @@ stock-comparison/
 ├── analytics.js              # 匿名访问与可见停留时长上报
 ├── admin.html/css/js         # 受保护的访问统计后台
 ├── server.py                 # Python 服务、采集、缓存、统计与降级
+├── server_test.py            # 分类、刷新、陈旧数据、缓存和 SEO 回归测试
 ├── analytics_test.py         # 统计后端和鉴权测试
 ├── analytics_client.test.mjs # 浏览器统计逻辑测试
-├── browser_test.py           # 可选浏览器端到端测试
+├── ops.py / ops_test.py      # SQLite 备份和生产监控
+├── browser_test.py           # 固定数据的浏览器端到端测试
 ├── launcher_test.py          # 启动器测试
-├── assets/                   # 本地字体和纹理资源
-├── cloudflare/               # Worker 实现与测试
+├── assets/                   # 轻量票据纹理和状态章资源
+├── cloudflare/               # 可复现 Worker 回退构建与测试
+├── .github/workflows/ci.yml  # Linux、浏览器、Worker 和 Windows CI
 ├── deployment/macos/         # LaunchAgent 示例
 └── evidence/                 # 公开界面截图
 ```

@@ -30,11 +30,11 @@
         </div>
         <dl class="metrics" aria-label="今日访问摘要">
           <div>
-            <dt>独立 IP</dt>
+            <dt>估算独立 IP</dt>
             <dd id="todayUniqueIps">—</dd>
           </div>
           <div>
-            <dt>访问次数</dt>
+            <dt>估算访问次数</dt>
             <dd id="todayVisits">—</dd>
           </div>
           <div>
@@ -62,8 +62,8 @@
           <thead>
             <tr>
               <th scope="col">日期</th>
-              <th scope="col">独立 IP</th>
-              <th scope="col">访问次数</th>
+              <th scope="col">估算独立 IP</th>
+              <th scope="col">估算访问次数</th>
               <th scope="col">平均停留</th>
               <th scope="col">总停留</th>
             </tr>
@@ -74,7 +74,7 @@
     </main>
 
     <footer>
-      <p>仅保存每日匿名 IP 标识与近似停留时长，数据保留 <span id="retentionDays">90</span> 天。</p>
+      <p>仅保存每日匿名 IP 标识与 JavaScript 上报的近似停留时长，数据保留 <span id="retentionDays">90</span> 天；拦截脚本、网络中断和机器人过滤会产生误差。</p>
     </footer>
   </body>
 </html>

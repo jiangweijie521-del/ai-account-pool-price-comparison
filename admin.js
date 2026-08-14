@@ -46,8 +46,8 @@ function renderRows(days) {
     const row = document.createElement("tr");
     const values = [
       ["日期", formatDate(day.date)],
-      ["独立 IP", day.unique_ips],
-      ["访问次数", day.visits],
+      ["估算独立 IP", day.unique_ips],
+      ["估算访问次数", day.visits],
       ["平均停留", formatDuration(day.average_seconds)],
       ["总停留", formatDuration(day.total_seconds)],
     ];

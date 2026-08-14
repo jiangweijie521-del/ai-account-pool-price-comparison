@@ -1,14 +1,104 @@
 import json
 import threading
+import time
+from datetime import datetime
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
-from server import find_server
+import server as stock_server
 
 
 ROOT = Path(__file__).resolve().parent
 EVIDENCE = ROOT / "evidence"
 BASE_URL = "http://127.0.0.1:8765/"
+
+
+def fixture_payload() -> dict:
+    fetched_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    shop = {"name": "测试店", "token": "SHOP1", "url": "https://pay.ldxp.cn/shop/SHOP1"}
+    specs = [
+        ("旧数据 Plus 已接码", "PLUS", 0.1, 2, True),
+        ("Plus 已接码 标准版", "PLUS", 5, 3, False),
+        ("Plus 已接码 稳定版", "PLUS", 6, 2, False),
+        ("Plus 已接码 长效版", "PLUS", 7, 1, False),
+        ("Plus 已接码 备用版", "PLUS", 8, 4, False),
+        ("Plus 已接码 周额度", "PLUS", 9, 5, False),
+        ("Plus 已接码 月额度", "PLUS", 10, 6, False),
+        ("Plus 已接码 独享版", "PLUS", 11, 7, False),
+        ("Plus 已接码 缺货版", "PLUS", 4, 0, False),
+        ("长效 周额team", "K12", 15, 2, False),
+        ("Claude Pro 成品号", "Claude", 18, 2, False),
+        ("Gemini Pro 12个月", "Gemini", 20, 2, False),
+    ]
+    items = []
+    for index, (name, category, price, count, stale) in enumerate(specs, start=1):
+        item = stock_server.transform_item(
+            {
+                "name": name,
+                "goods_key": f"ITEM{index}",
+                "price": price,
+                "category": {"name": category},
+                "extend": {"stock_count": count},
+                "link": f"https://pay.ldxp.cn/item/ITEM{index}",
+            },
+            shop,
+            "card",
+        )
+        assert item is not None
+        item.update({"same_product_shops": 0, "stale": stale, "fetched_at": fetched_at})
+        items.append(item)
+    items.sort(
+        key=lambda entry: (
+            entry["group_rank"],
+            entry["group"],
+            entry["stale"],
+            not entry["available"],
+            entry["price"],
+        )
+    )
+    available = sum(1 for item in items if item["available"])
+    return {
+        "ok": True,
+        "partial": True,
+        "generated_at": fetched_at,
+        "refresh_seconds": 300,
+        "summary": {
+            "total": len(items),
+            "available": available,
+            "out_of_stock": len(items) - available,
+            "groups": len({item["group"] for item in items}),
+            "shops_fresh": 1,
+            "shops_stale": 1,
+            "shops_total": 2,
+        },
+        "shops": [
+            {
+                "name": "测试店",
+                "nickname": "测试店",
+                "token": "SHOP1",
+                "url": shop["url"],
+                "ok": True,
+                "stale": False,
+                "message": "读取成功",
+                "fetched_at": fetched_at,
+                "declared_count": len(items),
+                "item_count": len(items),
+            },
+            {
+                "name": "旧数据店",
+                "nickname": "旧数据店",
+                "token": "SHOP2",
+                "url": "https://pay.ldxp.cn/shop/SHOP2",
+                "ok": False,
+                "stale": True,
+                "message": "网络连接超时，显示上次数据",
+                "fetched_at": fetched_at,
+                "declared_count": 1,
+                "item_count": 1,
+            },
+        ],
+        "items": items,
+    }
 
 
 def wait_for_inventory(page) -> None:
@@ -37,15 +127,21 @@ def main() -> None:
         assert initial_rows > 0
         assert initial_unavailable == 0
         assert page.locator("#availabilityToggle").get_attribute("aria-pressed") == "true"
-        assert "最后更新" in page.locator("#updatedAt").inner_text()
+        assert "检查时间" in page.locator("#updatedAt").inner_text()
         assert page.locator("#syncStamp").inner_text() in {"数据已同步", "部分同步"}
         assert page.locator("#cheapestList .cheap-pick").count() >= 3
         assert page.locator(".key-icon").count() == 3
         assert page.locator("#updatedAt").evaluate("element => element.tagName") == "TIME"
         assert page.locator("#updatedAt").get_attribute("datetime")
-        assert page.evaluate("document.fonts.check('700 64px \\\"Receipt Display\\\"')")
+        assert "Receipt Display" not in page.locator("h1").evaluate("element => getComputedStyle(element).fontFamily")
+        assert not page.evaluate("performance.getEntriesByType('resource').some(entry => entry.name.includes('NotoSansSC'))")
         assert "paper-fiber.svg" in page.locator(".paper").evaluate("element => getComputedStyle(element).backgroundImage")
         assert "ink-mask.svg" in page.locator("h1").evaluate("element => getComputedStyle(element).webkitMaskImage")
+        assert "sponsored" in (page.locator(".cloud-offer").get_attribute("rel") or "")
+        assert "推广" in page.locator(".cloud-offer").inner_text()
+        assert "官方渠道" not in page.locator(".cloud-offer").inner_text()
+        assert "限时" not in page.locator(".cloud-offer").inner_text()
+        assert "¥0.10" not in page.locator("#cheapestList").inner_text()
 
         button_heights = page.locator("button").evaluate_all(
             "buttons => buttons.filter(button => !button.hidden).map(button => button.getBoundingClientRect().height)"
@@ -114,6 +210,13 @@ def main() -> None:
         assert mobile_overflow <= 1
         assert mobile_page.locator(".row-head:visible").count() == 0
         assert mobile_page.locator("#cheapestList .cheap-pick").count() >= 3
+        first_price = mobile_page.locator("#cheapestList .cheap-price").first.bounding_box()
+        assert first_price and first_price["y"] + first_price["height"] < 844
+        expand_button = mobile_page.locator(".group-expand").first
+        assert expand_button.is_visible()
+        rows_before_expand = mobile_page.locator(".inventory-group .product-row").count()
+        expand_button.click()
+        assert mobile_page.locator(".inventory-group .product-row").count() > rows_before_expand
         mobile_page.evaluate("window.scrollTo(0, 0)")
         mobile_page.screenshot(path=str(EVIDENCE / "mobile-top-final.png"))
         mobile_page.locator("#inventory").scroll_into_view_if_needed()
@@ -132,7 +235,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    server = find_server("127.0.0.1", 8765)
+    stock_server.CACHE.update({"stored_at": time.monotonic(), "payload": fixture_payload()})
+    stock_server.LAST_MANUAL_REFRESH_AT = time.monotonic()
+    server = stock_server.find_server("127.0.0.1", 8765)
     host, port = server.server_address[:2]
     BASE_URL = f"http://{host}:{port}/"
     thread = threading.Thread(target=server.serve_forever, daemon=True)
