@@ -1,6 +1,8 @@
 "use strict";
 
 const elements = {
+  paper: document.querySelector(".paper"),
+  skipLink: document.querySelector(".skip-link"),
   availabilityToggle: document.querySelector("#availabilityToggle"),
   availabilityState: document.querySelector("#availabilityState"),
   refreshButton: document.querySelector("#refreshButton"),
@@ -19,6 +21,13 @@ const elements = {
   inventoryList: document.querySelector("#inventoryList"),
   resultCount: document.querySelector("#resultCount"),
   shopList: document.querySelector("#shopList"),
+  historyBackdrop: document.querySelector("#historyBackdrop"),
+  historyPanel: document.querySelector("#historyPanel"),
+  historyClose: document.querySelector("#historyClose"),
+  historyTitle: document.querySelector("#historyTitle"),
+  historyMeta: document.querySelector("#historyMeta"),
+  historyBody: document.querySelector("#historyBody"),
+  historyRangeButtons: [...document.querySelectorAll("[data-history-days]")],
 };
 
 const state = {
@@ -28,6 +37,10 @@ const state = {
   loading: false,
   countdown: 60,
   expandedGroups: new Set(),
+  historyItem: null,
+  historyDays: 7,
+  historyRequest: 0,
+  historyReturnFocus: null,
 };
 
 const priceFormatter = new Intl.NumberFormat("zh-CN", {
@@ -43,6 +56,12 @@ function createElement(tag, className, text) {
   const element = document.createElement(tag);
   if (className) element.className = className;
   if (text !== undefined) element.textContent = text;
+  return element;
+}
+
+function createSvgElement(tag, attributes = {}) {
+  const element = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [name, value] of Object.entries(attributes)) element.setAttribute(name, String(value));
   return element;
 }
 
@@ -66,6 +85,12 @@ function formatTime(value) {
     second: "2-digit",
     hour12: false,
   }).format(date);
+}
+
+function formatDay(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "时间未知";
+  return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit" }).format(date);
 }
 
 function formatAge(value) {
@@ -124,14 +149,16 @@ function makeRowHead() {
 }
 
 function makeProductRow(item, isCheapest = false) {
-  const row = createElement("a", "product-row");
-  row.href = safeLink(item.link, item.shop_url);
-  row.target = "_blank";
-  row.rel = "noopener noreferrer";
-  row.setAttribute("aria-label", `${item.name}，${item.shop}，${stockText(item)}，${formatPrice(item.price)}，打开商品详情`);
+  const row = createElement("div", "product-row");
   if (isCheapest) row.classList.add("is-cheapest");
   if (!item.available) row.classList.add("is-unavailable");
   if (item.stale) row.classList.add("is-stale");
+
+  const link = createElement("a", "product-link");
+  link.href = safeLink(item.link, item.shop_url);
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.setAttribute("aria-label", `${item.name}，${item.shop}，${stockText(item)}，${formatPrice(item.price)}，打开商品详情`);
 
   const main = createElement("span", "product-main");
   const name = createElement("strong");
@@ -146,13 +173,25 @@ function makeProductRow(item, isCheapest = false) {
   if (tagValues.length === 0) tagValues.push("查看详情");
   for (const value of tagValues.slice(0, 4)) tags.append(createElement("span", "tag", value));
 
-  row.append(
+  link.append(
     main,
     createElement("span", "shop-name", item.shop),
     tags,
     createElement("span", "stock", stockText(item)),
     createElement("span", "price", formatPrice(item.price)),
   );
+  const trendButton = createElement("button", "trend-button");
+  trendButton.type = "button";
+  trendButton.title = "查看价格与库存走势";
+  trendButton.setAttribute("aria-label", `查看${item.name}的价格与库存走势`);
+  const icon = createSvgElement("svg", { viewBox: "0 0 24 24", "aria-hidden": "true" });
+  icon.append(
+    createSvgElement("path", { d: "M4 18V6M4 18h16" }),
+    createSvgElement("path", { d: "m7 14 4-4 3 2 5-6" }),
+  );
+  trendButton.append(icon, createElement("span", "trend-label", "走势"));
+  trendButton.addEventListener("click", () => openHistory(item, trendButton));
+  row.append(link, trendButton);
   return row;
 }
 
@@ -291,6 +330,251 @@ function renderShops() {
   }
 }
 
+function historyPointX(observations, index) {
+  const timestamps = observations.map((point) => new Date(point.at).getTime());
+  const first = timestamps[0];
+  const last = timestamps.at(-1);
+  if (!Number.isFinite(first) || !Number.isFinite(last) || first === last) {
+    return observations.length === 1 ? 285 : 42 + (index / Math.max(1, observations.length - 1)) * 486;
+  }
+  return 42 + ((timestamps[index] - first) / (last - first)) * 486;
+}
+
+function historyPointY(observations, accessor, index, top, height) {
+  const values = observations.map(accessor).filter((value) => Number.isFinite(value));
+  const value = accessor(observations[index]);
+  if (values.length === 0 || !Number.isFinite(value)) return null;
+  const minimum = Math.min(...values);
+  const maximum = Math.max(...values);
+  const spread = Math.max(maximum - minimum, 1);
+  return top + height - ((value - minimum) / spread) * height;
+}
+
+function historyLinePath(observations, accessor, top, height) {
+  let drawing = false;
+  const commands = [];
+  observations.forEach((point, index) => {
+    const value = accessor(point);
+    if (!Number.isFinite(value)) {
+      drawing = false;
+      return;
+    }
+    const x = historyPointX(observations, index);
+    const y = historyPointY(observations, accessor, index, top, height);
+    commands.push(`${drawing ? "L" : "M"}${x.toFixed(1)} ${y.toFixed(1)}`);
+    drawing = true;
+  });
+  return commands.join(" ");
+}
+
+function appendHistoryPoint(svg, observations, accessor, top, height, className) {
+  const index = observations.findLastIndex((point) => Number.isFinite(accessor(point)));
+  if (index < 0) return;
+  svg.append(createSvgElement("circle", {
+    class: `history-point ${className}`,
+    cx: historyPointX(observations, index),
+    cy: historyPointY(observations, accessor, index, top, height),
+    r: 5,
+  }));
+}
+
+function makeHistoryChart(payload) {
+  const wrapper = createElement("section", "history-chart");
+  wrapper.setAttribute("aria-label", `${payload.range_days}天价格与库存变化图`);
+  const legend = createElement("div", "history-legend");
+  const priceLegend = createElement("span", "history-legend-price", "价格");
+  const stockLegend = createElement("span", "history-legend-stock", "库存");
+  legend.append(priceLegend, stockLegend);
+  if (payload.observations.some((point) => point.restock)) {
+    legend.append(createElement("span", "history-legend-restock", "补货"));
+  }
+
+  const svg = createSvgElement("svg", {
+    viewBox: "0 0 560 260",
+    role: "img",
+    "aria-label": `${payload.range_days}天内价格与库存走势；价格和库存分区绘制`,
+  });
+  svg.append(
+    createSvgElement("line", { class: "history-axis", x1: 42, y1: 112, x2: 528, y2: 112 }),
+    createSvgElement("line", { class: "history-axis", x1: 42, y1: 226, x2: 528, y2: 226 }),
+  );
+  const priceLabel = createSvgElement("text", { class: "history-axis-label", x: 42, y: 25 });
+  priceLabel.textContent = "价格";
+  const stockLabel = createSvgElement("text", { class: "history-axis-label", x: 42, y: 139 });
+  stockLabel.textContent = "库存";
+  svg.append(priceLabel, stockLabel);
+
+  for (const [index, point] of payload.observations.entries()) {
+    if (!point.restock) continue;
+    const x = historyPointX(payload.observations, index);
+    svg.append(createSvgElement("line", { class: "history-restock-line", x1: x, y1: 145, x2: x, y2: 226 }));
+  }
+  svg.append(
+    createSvgElement("path", {
+      class: "history-line history-line-price",
+      d: historyLinePath(payload.observations, (point) => Number(point.price), 35, 66),
+    }),
+    createSvgElement("path", {
+      class: "history-line history-line-stock",
+      d: historyLinePath(payload.observations, (point) => point.stock, 149, 66),
+    }),
+  );
+  appendHistoryPoint(svg, payload.observations, (point) => Number(point.price), 35, 66, "history-point-price");
+  appendHistoryPoint(svg, payload.observations, (point) => point.stock, 149, 66, "history-point-stock");
+  const firstTime = createSvgElement("text", {
+    class: "history-date-label",
+    x: payload.observations.length === 1 ? 285 : 42,
+    y: 251,
+    "text-anchor": payload.observations.length === 1 ? "middle" : "start",
+  });
+  firstTime.textContent = formatDay(payload.observations[0].at);
+  svg.append(firstTime);
+  if (payload.observations.length > 1) {
+    const lastTime = createSvgElement("text", { class: "history-date-label", x: 528, y: 251, "text-anchor": "end" });
+    lastTime.textContent = formatDay(payload.observations.at(-1).at);
+    svg.append(lastTime);
+  }
+  wrapper.append(legend, svg);
+  return wrapper;
+}
+
+function renderHistory(payload) {
+  elements.historyMeta.textContent = `${payload.item.name} · ${payload.item.shop}`;
+  const metrics = createElement("section", "history-metrics");
+  for (const [label, value] of [
+    ["当前价格", formatPrice(payload.item.current_price)],
+    ["区间最低", formatPrice(payload.metrics.min_price)],
+    ["区间最高", formatPrice(payload.metrics.max_price)],
+  ]) {
+    const metric = createElement("div");
+    metric.append(createElement("span", "", label), createElement("strong", "", value));
+    metrics.append(metric);
+  }
+
+  const forecast = createElement("section", `history-forecast is-${payload.forecast.status}`);
+  forecast.append(createElement("p", "history-section-label", "预计库存"));
+  let forecastValue = "暂不预测";
+  if (payload.forecast.status === "ready") {
+    forecastValue = `约 ${payload.forecast.min_days}–${payload.forecast.max_days} 天`;
+  } else if (payload.forecast.status === "depleted") {
+    forecastValue = "当前已无库存";
+  }
+  forecast.append(createElement("strong", "", forecastValue));
+  const confidenceLabels = { high: "较高", medium: "中等", low: "较低", none: "未评级" };
+  const forecastMeta = createElement("p", "", payload.forecast.reason);
+  if (payload.forecast.status === "ready") {
+    forecastMeta.append(document.createTextNode(` 置信度：${confidenceLabels[payload.forecast.confidence] || "较低"}。`));
+  }
+  forecast.append(forecastMeta);
+
+  const evidence = createElement("section", "history-evidence");
+  const stockValue = payload.item.current_stock === null ? "未提供" : `${payload.item.current_stock} 件`;
+  for (const [label, value] of [
+    ["当前库存", stockValue],
+    ["有效记录", `${payload.metrics.sample_count} 个`],
+    [
+      "记录区间",
+      payload.metrics.first_observed_at === payload.metrics.last_observed_at
+        ? formatTime(payload.metrics.last_observed_at)
+        : `${formatDay(payload.metrics.first_observed_at)}–${formatDay(payload.metrics.last_observed_at)}`,
+    ],
+  ]) {
+    const cell = createElement("div");
+    cell.append(createElement("span", "", label), createElement("strong", "", value));
+    evidence.append(cell);
+  }
+
+  const note = createElement(
+    "p",
+    "history-note",
+    "预计区间只依据公开库存的净下降速度；补货、下架、库存修正或上游异常都会影响结果。",
+  );
+  elements.historyBody.replaceChildren(metrics, makeHistoryChart(payload), forecast, evidence, note);
+}
+
+function renderHistoryState(message, type = "loading") {
+  const stateMessage = createElement("div", `history-state is-${type}`);
+  const titles = { loading: "读取记录中", empty: "暂无历史记录", error: "暂时无法显示" };
+  stateMessage.append(createElement("strong", "", titles[type] || titles.error));
+  stateMessage.append(createElement("p", "", message));
+  if (type === "error") {
+    const retry = createElement("button", "history-retry", "重新读取");
+    retry.type = "button";
+    retry.addEventListener("click", () => loadProductHistory(state.historyDays));
+    stateMessage.append(retry);
+  }
+  elements.historyBody.replaceChildren(stateMessage);
+}
+
+async function loadProductHistory(days) {
+  if (!state.historyItem) return;
+  state.historyDays = days;
+  elements.historyRangeButtons.forEach((button) => {
+    button.setAttribute("aria-pressed", String(Number(button.dataset.historyDays) === days));
+  });
+  const requestId = ++state.historyRequest;
+  renderHistoryState(`正在读取最近 ${days} 天的价格与库存…`);
+  const item = state.historyItem;
+  const query = new URLSearchParams({ shop_token: item.shop_token, key: item.key, days: String(days) });
+  try {
+    const response = await fetch(`/api/product-history?${query}`, {
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) throw new Error(payload.message || "历史数据暂时不可用");
+    if (payload.empty) {
+      if (requestId === state.historyRequest) renderHistoryState(payload.message || "这个商品还没有历史记录。", "empty");
+      return;
+    }
+    if (requestId === state.historyRequest) renderHistory(payload);
+  } catch (error) {
+    if (requestId !== state.historyRequest) return;
+    const message = error instanceof Error ? error.message : "历史数据暂时不可用";
+    renderHistoryState(message, "error");
+  }
+}
+
+function openHistory(item, trigger) {
+  state.historyItem = item;
+  state.historyReturnFocus = trigger;
+  state.historyDays = 7;
+  elements.historyTitle.textContent = "价格与库存走势";
+  elements.historyMeta.textContent = `${item.name} · ${item.shop}`;
+  elements.historyPanel.hidden = false;
+  elements.historyBackdrop.hidden = false;
+  elements.paper.inert = true;
+  elements.paper.setAttribute("aria-hidden", "true");
+  elements.skipLink.inert = true;
+  elements.skipLink.setAttribute("aria-hidden", "true");
+  document.body.classList.add("history-open");
+  window.requestAnimationFrame(() => {
+    elements.historyPanel.classList.add("is-open");
+    elements.historyBackdrop.classList.add("is-open");
+    elements.historyClose.focus();
+  });
+  loadProductHistory(7);
+}
+
+function closeHistory() {
+  if (elements.historyPanel.hidden) return;
+  state.historyRequest += 1;
+  elements.historyPanel.classList.remove("is-open");
+  elements.historyBackdrop.classList.remove("is-open");
+  document.body.classList.remove("history-open");
+  const returnFocus = state.historyReturnFocus;
+  const delay = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 240;
+  window.setTimeout(() => {
+    elements.historyPanel.hidden = true;
+    elements.historyBackdrop.hidden = true;
+    elements.paper.inert = false;
+    elements.paper.removeAttribute("aria-hidden");
+    elements.skipLink.inert = false;
+    elements.skipLink.removeAttribute("aria-hidden");
+    if (returnFocus?.isConnected) returnFocus.focus();
+  }, delay);
+}
+
 function render() {
   const items = visibleItems();
   renderCheapest(items);
@@ -383,6 +667,38 @@ elements.clearSearch.addEventListener("click", () => {
   elements.clearSearch.hidden = true;
   render();
   elements.searchInput.focus();
+});
+
+elements.historyClose.addEventListener("click", closeHistory);
+elements.historyBackdrop.addEventListener("click", closeHistory);
+elements.historyRangeButtons.forEach((button) => {
+  button.addEventListener("click", () => loadProductHistory(Number(button.dataset.historyDays)));
+});
+
+document.addEventListener("keydown", (event) => {
+  if (elements.historyPanel.hidden) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeHistory();
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const focusable = [...elements.historyPanel.querySelectorAll("button:not([disabled]), a[href], [tabindex]:not([tabindex='-1'])")]
+    .filter((element) => !element.hidden);
+  if (focusable.length === 0) {
+    event.preventDefault();
+    elements.historyPanel.focus();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable.at(-1);
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
 });
 
 window.setInterval(() => {

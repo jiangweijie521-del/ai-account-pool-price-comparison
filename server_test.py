@@ -4,9 +4,11 @@ import copy
 import json
 import threading
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
+from urllib.error import HTTPError
 from urllib.request import urlopen
 
 import server
@@ -45,6 +47,15 @@ def item(shop_token: str, price: float, *, stale: bool = False, fetched_at: str 
         "canonical": "plus已接码",
         "stale": stale,
         "fetched_at": fetched_at,
+    }
+
+
+def history_payload(observed_at: datetime, stock: int, price: float = 5.0, *, stale: bool = False) -> dict:
+    entry = item("SHOP1", price, stale=stale, fetched_at=observed_at.isoformat(timespec="seconds"))
+    entry.update({"stock": stock, "available": stock > 0})
+    return {
+        "generated_at": observed_at.isoformat(timespec="seconds"),
+        "items": [entry],
     }
 
 
@@ -158,8 +169,104 @@ class StaleInventoryTest(unittest.TestCase):
         self.assertEqual(payload["shops"][0]["fetched_at"], "2026-08-14T10:00:00+08:00")
 
 
+class ProductHistoryTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary = TemporaryDirectory()
+        self.database = Path(self.temporary.name) / "analytics.sqlite3"
+        self.start = datetime(2026, 8, 10, 10, 0, tzinfo=timezone(timedelta(hours=8)))
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def test_snapshot_keeps_changes_and_sparse_heartbeats_only(self):
+        server.record_inventory_history(self.database, history_payload(self.start, 10))
+        server.record_inventory_history(self.database, history_payload(self.start + timedelta(minutes=5), 10))
+        server.record_inventory_history(self.database, history_payload(self.start + timedelta(hours=6, minutes=1), 10))
+        server.record_inventory_history(self.database, history_payload(self.start + timedelta(hours=6, minutes=6), 9))
+        server.record_inventory_history(
+            self.database,
+            history_payload(self.start + timedelta(hours=7), 8, stale=True),
+        )
+
+        with server.product_history_connection(self.database) as connection:
+            rows = connection.execute(
+                "SELECT observed_at, stock FROM product_history ORDER BY observed_at"
+            ).fetchall()
+
+        self.assertEqual([row["stock"] for row in rows], [10, 10, 9])
+
+    def test_history_returns_price_metrics_and_conservative_runway(self):
+        stocks = [22, 20, 19, 17, 15, 13]
+        prices = [6.0, 6.0, 5.5, 5.5, 5.0, 5.5]
+        for index, (stock, price) in enumerate(zip(stocks, prices)):
+            server.record_inventory_history(
+                self.database,
+                history_payload(self.start + timedelta(days=index), stock, price),
+            )
+
+        result = server.get_product_history(
+            self.database,
+            "SHOP1",
+            "ITEMSHOP1",
+            7,
+            now=self.start + timedelta(days=5, hours=1),
+        )
+
+        self.assertEqual(result["range_days"], 7)
+        self.assertEqual(result["metrics"]["min_price"], 5.0)
+        self.assertEqual(result["metrics"]["max_price"], 6.0)
+        self.assertEqual(result["forecast"]["status"], "ready")
+        self.assertGreater(result["forecast"]["min_days"], 0)
+        self.assertGreaterEqual(result["forecast"]["max_days"], result["forecast"]["min_days"])
+        self.assertEqual(len(result["observations"]), 6)
+
+    def test_recent_restock_is_marked_and_blocks_premature_forecast(self):
+        stocks = [10, 8, 6, 15, 14, 13]
+        for index, stock in enumerate(stocks):
+            server.record_inventory_history(
+                self.database,
+                history_payload(self.start + timedelta(hours=12 * index), stock),
+            )
+
+        result = server.get_product_history(
+            self.database,
+            "SHOP1",
+            "ITEMSHOP1",
+            7,
+            now=self.start + timedelta(days=3),
+        )
+
+        self.assertEqual(result["forecast"]["status"], "insufficient")
+        self.assertTrue(any(point["restock"] for point in result["observations"]))
+        self.assertIn("补货", result["forecast"]["reason"])
+
+    def test_stale_latest_sample_blocks_inventory_forecast(self):
+        for index, stock in enumerate([22, 20, 19, 17, 15, 13]):
+            server.record_inventory_history(
+                self.database,
+                history_payload(self.start + timedelta(days=index), stock),
+            )
+
+        result = server.get_product_history(
+            self.database,
+            "SHOP1",
+            "ITEMSHOP1",
+            7,
+            now=self.start + timedelta(days=6),
+        )
+
+        self.assertEqual(result["forecast"]["status"], "insufficient")
+        self.assertIn("最新记录", result["forecast"]["reason"])
+
+    def test_unknown_product_returns_none(self):
+        self.assertIsNone(server.get_product_history(self.database, "SHOP1", "MISSING", 30, now=self.start))
+
+
 class StaticAndHealthTest(unittest.TestCase):
     def setUp(self):
+        self.temporary = TemporaryDirectory()
+        self.analytics_database = server.ANALYTICS_DB_FILE
+        server.ANALYTICS_DB_FILE = Path(self.temporary.name) / "analytics.sqlite3"
         self.httpd = server.AppServer(("127.0.0.1", 0), server.AppHandler)
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
@@ -169,6 +276,8 @@ class StaticAndHealthTest(unittest.TestCase):
         self.httpd.shutdown()
         self.httpd.server_close()
         self.thread.join(timeout=5)
+        server.ANALYTICS_DB_FILE = self.analytics_database
+        self.temporary.cleanup()
 
     def test_versioned_assets_are_immutable_but_html_is_not_cached(self):
         with urlopen(f"{self.base_url}/styles.css?v=release-1", timeout=5) as response:
@@ -194,6 +303,35 @@ class StaticAndHealthTest(unittest.TestCase):
                 self.assertEqual(response.status, 200)
                 self.assertIn(expected_type, response.headers["Content-Type"])
                 self.assertTrue(response.read())
+
+    def test_product_history_endpoint_returns_data_and_rejects_invalid_ranges(self):
+        observed_at = datetime.now().astimezone()
+        server.record_inventory_history(
+            server.ANALYTICS_DB_FILE,
+            history_payload(observed_at, 8, 5.5),
+        )
+        with urlopen(
+            f"{self.base_url}/api/product-history?shop_token=SHOP1&key=ITEMSHOP1&days=7",
+            timeout=5,
+        ) as response:
+            payload = json.load(response)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["item"]["current_stock"], 8)
+
+        with urlopen(
+            f"{self.base_url}/api/product-history?shop_token=SHOP1&key=MISSING&days=7",
+            timeout=5,
+        ) as response:
+            empty_payload = json.load(response)
+        self.assertTrue(empty_payload["ok"])
+        self.assertTrue(empty_payload["empty"])
+
+        with self.assertRaises(HTTPError) as context:
+            urlopen(
+                f"{self.base_url}/api/product-history?shop_token=SHOP1&key=ITEMSHOP1&days=365",
+                timeout=5,
+            )
+        self.assertEqual(context.exception.code, 400)
 
 
 class SeoSurfaceTest(unittest.TestCase):

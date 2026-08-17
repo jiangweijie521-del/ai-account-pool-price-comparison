@@ -381,12 +381,15 @@ export async function handleRequest(request, env, ctx, dependencies = {}) {
     return jsonResponse({
       ok: true,
       service: "stock-comparison",
-      version: "2026-08-15.1-worker",
+      version: "2026-08-17.2-worker",
       revision: env?.SERVICE_REVISION || "worker-fallback",
     });
   }
   if (url.pathname === "/api/analytics/session" && request.method === "POST") {
     return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
+  }
+  if (url.pathname === "/api/product-history") {
+    return jsonResponse({ ok: false, message: "Cloudflare 回退版本不保存商品历史记录。" }, 503);
   }
   if (url.pathname === "/admin" || url.pathname === "/admin/" || url.pathname === "/admin.html") {
     return new Response("Cloudflare 回退版本不提供访问分析后台。", {

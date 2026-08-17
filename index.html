@@ -16,9 +16,9 @@
     <meta property="og:url" content="https://stock.ultraai.site/">
     <link rel="icon" href="/assets/stamp-frame.svg" type="image/svg+xml">
     <script type="application/ld+json">{"@context":"https://schema.org","@type":"WebSite","name":"号池精选","alternateName":"库存比价台","url":"https://stock.ultraai.site/","inLanguage":"zh-CN","description":"ChatGPT Plus、Codex、OpenAI K12、Claude、Gemini 等 AI 账号库存与价格实时比价。"}</script>
-    <link rel="stylesheet" href="/styles.css?v=20260815-p1p2-v1">
+    <link rel="stylesheet" href="/styles.css?v=20260817-history-v5">
     <script src="/analytics.js?v=20260815-p1p2-v1" defer></script>
-    <script src="/app.js?v=20260815-p1p2-v1" defer></script>
+    <script src="/app.js?v=20260817-history-v5" defer></script>
   </head>
   <body>
     <!--
@@ -147,6 +147,38 @@
         <p>本页不收集账号、支付信息或原始 IP；访问统计是基于 JavaScript 上报的匿名估算，可能受拦截、机器人过滤和网络中断影响。</p>
       </footer>
     </div>
+
+    <div id="historyBackdrop" class="history-backdrop" hidden></div>
+    <aside
+      id="historyPanel"
+      class="history-panel"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="historyTitle"
+      aria-describedby="historyMeta"
+      tabindex="-1"
+      hidden
+    >
+      <div class="history-grip" aria-hidden="true"></div>
+      <header class="history-header">
+        <div>
+          <p class="history-kicker">商品记录</p>
+          <h2 id="historyTitle">价格与库存走势</h2>
+          <p id="historyMeta">正在读取商品记录…</p>
+        </div>
+        <button id="historyClose" class="history-close" type="button" aria-label="关闭价格与库存走势">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5l14 14M19 5 5 19"/></svg>
+        </button>
+      </header>
+      <div class="history-range" role="group" aria-label="历史时间范围">
+        <button type="button" data-history-days="7" aria-pressed="true">7 天</button>
+        <button type="button" data-history-days="30" aria-pressed="false">30 天</button>
+        <button type="button" data-history-days="90" aria-pressed="false">90 天</button>
+      </div>
+      <div id="historyBody" class="history-body" aria-live="polite">
+        <p class="history-state">正在读取价格与库存记录…</p>
+      </div>
+    </aside>
 
     <noscript>这个页面需要启用 JavaScript 才能自动读取和整理库存。</noscript>
   </body>

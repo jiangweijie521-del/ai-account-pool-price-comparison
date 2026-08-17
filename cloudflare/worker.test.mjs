@@ -256,6 +256,16 @@ test("analytics endpoint is a safe no-op in Worker fallback", async () => {
   assert.equal(response.status, 204);
 });
 
+test("product history clearly reports that Worker fallback has no persistence", async () => {
+  const response = await worker.handleRequest(
+    new Request("https://stock.example/api/product-history?shop_token=SHOP1&key=ITEM1&days=7"),
+    {},
+    {},
+  );
+  assert.equal(response.status, 503);
+  assert.match((await response.json()).message, /历史/);
+});
+
 test("admin endpoint clearly reports that fallback has no admin", async () => {
   const response = await worker.handleRequest(new Request("https://stock.example/admin"), {}, {});
 

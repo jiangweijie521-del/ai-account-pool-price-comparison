@@ -19,7 +19,7 @@ import threading
 import time
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from html import unescape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -37,7 +37,7 @@ MANUAL_REFRESH_COOLDOWN_SECONDS = 30
 PERSIST_SECONDS = 15 * 60
 UPSTREAM_MIN_INTERVAL = 0.25
 HTTP_TIMEOUT = 20
-SERVICE_VERSION = "2026-08-15.1"
+SERVICE_VERSION = "2026-08-17.2"
 SERVICE_REVISION = os.environ.get("SERVICE_REVISION", "dev")
 SERVICE_STARTED_AT = datetime.now().astimezone().isoformat(timespec="seconds")
 MAX_RESPONSE_BYTES = 12 * 1024 * 1024
@@ -57,6 +57,10 @@ ANALYTICS_MAX_BODY_BYTES = 4096
 ANALYTICS_DURATION_GRACE_SECONDS = 5
 ANALYTICS_MAX_POSTS_PER_MINUTE = 120
 ANALYTICS_MAX_SESSIONS_PER_VISITOR_DAY = 100
+PRODUCT_HISTORY_RETENTION_DAYS = 90
+PRODUCT_HISTORY_HEARTBEAT_SECONDS = 6 * 60 * 60
+PRODUCT_HISTORY_STALE_SECONDS = PRODUCT_HISTORY_HEARTBEAT_SECONDS * 2
+PRODUCT_HISTORY_MAX_POINTS = 240
 ACCESS_LOG_FILE = Path(os.environ.get("ACCESS_LOG_FILE", ROOT / "access.log"))
 ACCESS_LOG_MAX_BYTES = 1024 * 1024
 ACCESS_LOG_BACKUP_COUNT = 3
@@ -117,6 +121,7 @@ LAST_MANUAL_REFRESH_AT = 0.0
 UPSTREAM_RATE_LOCK = threading.Lock()
 UPSTREAM_NEXT_REQUEST_AT = 0.0
 ANALYTICS_LOCK = threading.Lock()
+PRODUCT_HISTORY_LOCK = threading.Lock()
 ANALYTICS_RATE_LOCK = threading.Lock()
 ANALYTICS_RATE_BUCKETS: dict[str, tuple[float, int]] = {}
 ACCESS_LOGGER: Optional[logging.Logger] = None
@@ -125,6 +130,7 @@ TAG_RE = re.compile(r"<[^>]+>")
 SPACE_RE = re.compile(r"\s+")
 NON_WORD_RE = re.compile(r"[\W_]+", re.UNICODE)
 ANALYTICS_SESSION_RE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
+PRODUCT_ID_RE = re.compile(r"^[A-Za-z0-9]{1,64}$")
 BOT_USER_AGENT_RE = re.compile(r"(?:bot|crawler|spider|headlesschrome|curl/|wget/|python-requests|uptimerobot)", re.I)
 ADMIN_PATHS = {"/admin", "/admin/", "/admin.html", "/admin.css", "/admin.js", "/api/admin/analytics"}
 
@@ -586,6 +592,262 @@ def inventory_delivery(
     return delivered
 
 
+def product_history_connection(database: Path) -> sqlite3.Connection:
+    database.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(str(database), timeout=5)
+    try:
+        os.chmod(database, 0o600)
+    except OSError:
+        connection.close()
+        raise
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA journal_mode=WAL")
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS product_history (
+            shop_token TEXT NOT NULL,
+            goods_key TEXT NOT NULL,
+            observed_at INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            shop TEXT NOT NULL,
+            price_cents INTEGER NOT NULL,
+            stock INTEGER,
+            available INTEGER NOT NULL,
+            PRIMARY KEY (shop_token, goods_key, observed_at)
+        );
+        CREATE INDEX IF NOT EXISTS product_history_lookup_idx
+        ON product_history(shop_token, goods_key, observed_at);
+        """
+    )
+    return connection
+
+
+def history_timestamp(payload: dict[str, Any]) -> int:
+    raw_value = payload.get("generated_at")
+    if isinstance(raw_value, str):
+        try:
+            parsed = datetime.fromisoformat(raw_value)
+            if parsed.tzinfo is None:
+                parsed = parsed.astimezone()
+            return int(parsed.timestamp())
+        except ValueError:
+            pass
+    return int(datetime.now().astimezone().timestamp())
+
+
+def record_inventory_history(database: Path, payload: dict[str, Any]) -> int:
+    items = [
+        entry
+        for entry in payload.get("items", [])
+        if isinstance(entry, dict) and not entry.get("stale")
+    ]
+    if not items:
+        return 0
+
+    observed_at = history_timestamp(payload)
+    cutoff = observed_at - PRODUCT_HISTORY_RETENTION_DAYS * 24 * 60 * 60
+    inserted = 0
+    with PRODUCT_HISTORY_LOCK, product_history_connection(database) as connection:
+        for entry in items:
+            shop_token = clean_text(entry.get("shop_token"))
+            goods_key = clean_text(entry.get("key"))
+            if not PRODUCT_ID_RE.fullmatch(shop_token) or not PRODUCT_ID_RE.fullmatch(goods_key):
+                continue
+            try:
+                price = float(entry.get("price"))
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(price) or price < 0:
+                continue
+            stock_value = entry.get("stock")
+            try:
+                stock = None if stock_value is None else max(0, int(stock_value))
+            except (TypeError, ValueError):
+                continue
+            price_cents = int(round(price * 100))
+            available = int(bool(entry.get("available")))
+            previous = connection.execute(
+                """
+                SELECT observed_at, price_cents, stock, available
+                FROM product_history
+                WHERE shop_token = ? AND goods_key = ?
+                ORDER BY observed_at DESC
+                LIMIT 1
+                """,
+                (shop_token, goods_key),
+            ).fetchone()
+            unchanged = previous is not None and (
+                int(previous["price_cents"]) == price_cents
+                and previous["stock"] == stock
+                and int(previous["available"]) == available
+            )
+            recent_heartbeat = previous is not None and observed_at - int(previous["observed_at"]) < PRODUCT_HISTORY_HEARTBEAT_SECONDS
+            if unchanged and recent_heartbeat:
+                continue
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO product_history(
+                    shop_token, goods_key, observed_at, name, shop, price_cents, stock, available
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    shop_token,
+                    goods_key,
+                    observed_at,
+                    clean_text(entry.get("name")) or goods_key,
+                    clean_text(entry.get("shop")) or shop_token,
+                    price_cents,
+                    stock,
+                    available,
+                ),
+            )
+            inserted += max(0, cursor.rowcount)
+        connection.execute("DELETE FROM product_history WHERE observed_at < ?", (cutoff,))
+    return inserted
+
+
+def build_stock_forecast(rows: list[sqlite3.Row], current_timestamp: Optional[int] = None) -> dict[str, Any]:
+    stock_points = [row for row in rows if row["stock"] is not None]
+    if not stock_points:
+        return {"status": "insufficient", "confidence": "none", "reason": "店铺未提供可计算的库存数量。"}
+
+    if current_timestamp is not None:
+        latest_age = max(0, current_timestamp - int(stock_points[-1]["observed_at"]))
+        if latest_age > PRODUCT_HISTORY_STALE_SECONDS:
+            return {"status": "insufficient", "confidence": "none", "reason": "最新记录已超过 12 小时，暂不预测。"}
+
+    current_stock = int(stock_points[-1]["stock"])
+    if current_stock <= 0:
+        return {"status": "depleted", "confidence": "high", "reason": "当前公开库存为 0。"}
+
+    last_restock_index = 0
+    restock_seen = False
+    for index in range(1, len(stock_points)):
+        if int(stock_points[index]["stock"]) > int(stock_points[index - 1]["stock"]):
+            last_restock_index = index
+            restock_seen = True
+    segment = stock_points[last_restock_index:]
+    span_seconds = int(segment[-1]["observed_at"]) - int(segment[0]["observed_at"]) if len(segment) > 1 else 0
+    minimum_span = 2 * 24 * 60 * 60
+    if len(segment) < 6 or span_seconds < minimum_span:
+        reason = "最近一次补货后记录还不足 2 天，暂不预测。" if restock_seen else "至少需要连续记录 2 天且有 6 个有效样本。"
+        return {"status": "insufficient", "confidence": "none", "reason": reason}
+
+    start_stock = int(segment[0]["stock"])
+    net_drop = start_stock - current_stock
+    if net_drop <= 0:
+        return {"status": "insufficient", "confidence": "none", "reason": "观察期内尚未形成可用的净库存下降趋势。"}
+
+    span_days = span_seconds / (24 * 60 * 60)
+    full_rate = net_drop / span_days
+    midpoint = len(segment) // 2
+    recent = segment[midpoint:]
+    recent_span = int(recent[-1]["observed_at"]) - int(recent[0]["observed_at"])
+    recent_drop = int(recent[0]["stock"]) - current_stock
+    rates = [full_rate]
+    if recent_span > 0 and recent_drop > 0:
+        rates.append(recent_drop / (recent_span / (24 * 60 * 60)))
+    slow_rate = max(0.01, min(rates))
+    fast_rate = max(rates)
+    min_days = max(1, math.floor(current_stock / fast_rate * 0.9))
+    max_days = max(min_days, math.ceil(current_stock / slow_rate * 1.1))
+
+    if span_days >= 14 and len(segment) >= 20:
+        confidence = "high"
+    elif span_days >= 7 and len(segment) >= 10:
+        confidence = "medium"
+    else:
+        confidence = "low"
+    return {
+        "status": "ready",
+        "confidence": confidence,
+        "min_days": min_days,
+        "max_days": max_days,
+        "daily_net_depletion": round(full_rate, 2),
+        "reason": f"基于最近 {span_days:.1f} 天净库存减少 {net_drop} 件；公开库存变化不等于实际销量。",
+    }
+
+
+def get_product_history(
+    database: Path,
+    shop_token: str,
+    goods_key: str,
+    days: int,
+    now: Optional[datetime] = None,
+) -> Optional[dict[str, Any]]:
+    if not PRODUCT_ID_RE.fullmatch(shop_token) or not PRODUCT_ID_RE.fullmatch(goods_key):
+        raise ValueError("invalid product identity")
+    if days not in (7, 30, 90):
+        raise ValueError("invalid history range")
+    moment = now or datetime.now().astimezone()
+    cutoff = int(moment.timestamp()) - days * 24 * 60 * 60
+    with PRODUCT_HISTORY_LOCK, product_history_connection(database) as connection:
+        rows = connection.execute(
+            """
+            SELECT shop_token, goods_key, observed_at, name, shop, price_cents, stock, available
+            FROM product_history
+            WHERE shop_token = ? AND goods_key = ? AND observed_at >= ?
+            ORDER BY observed_at
+            """,
+            (shop_token, goods_key, cutoff),
+        ).fetchall()
+    if not rows:
+        return None
+
+    restock_indices: set[int] = set()
+    previous_stock: Optional[int] = None
+    for index, row in enumerate(rows):
+        stock = row["stock"]
+        if stock is not None:
+            current = int(stock)
+            if previous_stock is not None and current > previous_stock:
+                restock_indices.add(index)
+            previous_stock = current
+
+    if len(rows) <= PRODUCT_HISTORY_MAX_POINTS:
+        selected_indices = set(range(len(rows)))
+    else:
+        selected_indices = {
+            round(index * (len(rows) - 1) / (PRODUCT_HISTORY_MAX_POINTS - 1))
+            for index in range(PRODUCT_HISTORY_MAX_POINTS)
+        }
+        selected_indices.update(restock_indices)
+    observations = [
+        {
+            "at": datetime.fromtimestamp(int(row["observed_at"]), timezone.utc).isoformat(timespec="seconds"),
+            "price": int(row["price_cents"]) / 100,
+            "stock": None if row["stock"] is None else int(row["stock"]),
+            "available": bool(row["available"]),
+            "restock": index in restock_indices,
+        }
+        for index, row in enumerate(rows)
+        if index in selected_indices
+    ]
+    prices = [int(row["price_cents"]) / 100 for row in rows]
+    current = rows[-1]
+    return {
+        "range_days": days,
+        "item": {
+            "shop_token": current["shop_token"],
+            "key": current["goods_key"],
+            "name": current["name"],
+            "shop": current["shop"],
+            "current_price": int(current["price_cents"]) / 100,
+            "current_stock": None if current["stock"] is None else int(current["stock"]),
+            "available": bool(current["available"]),
+        },
+        "metrics": {
+            "min_price": min(prices),
+            "max_price": max(prices),
+            "sample_count": len(rows),
+            "first_observed_at": datetime.fromtimestamp(int(rows[0]["observed_at"]), timezone.utc).isoformat(timespec="seconds"),
+            "last_observed_at": datetime.fromtimestamp(int(rows[-1]["observed_at"]), timezone.utc).isoformat(timespec="seconds"),
+        },
+        "forecast": build_stock_forecast(rows, int(moment.timestamp())),
+        "observations": observations,
+    }
+
+
 def get_inventory(force: bool = False) -> dict[str, Any]:
     global LAST_MANUAL_REFRESH_AT
     with STATE_LOCK:
@@ -604,6 +866,10 @@ def get_inventory(force: bool = False) -> dict[str, Any]:
         if force:
             LAST_MANUAL_REFRESH_AT = time.monotonic()
         save_persisted_cache(payload)
+        try:
+            record_inventory_history(ANALYTICS_DB_FILE, payload)
+        except (OSError, sqlite3.Error, ValueError):
+            logging.getLogger("stock-comparison.history").warning("unable to record product history", exc_info=True)
         CACHE.update({"stored_at": time.monotonic(), "payload": copy.deepcopy(payload)})
         return inventory_delivery(payload, "refreshed", 0)
 
@@ -938,6 +1204,22 @@ class AppHandler(BaseHTTPRequestHandler):
                 self.send_json(200, get_inventory(force=force))
             except Exception:
                 self.send_json(502, {"ok": False, "message": "库存服务暂时读取失败，请稍后点“立即刷新”。"})
+            return
+        if parsed.path == "/api/product-history":
+            try:
+                query = parse_qs(parsed.query)
+                shop_token = query.get("shop_token", [""])[0]
+                goods_key = query.get("key", [""])[0]
+                days = int(query.get("days", ["7"])[0])
+                payload = get_product_history(ANALYTICS_DB_FILE, shop_token, goods_key, days)
+                if payload is None:
+                    self.send_json(200, {"ok": True, "empty": True, "message": "这个商品还没有历史记录。"})
+                else:
+                    self.send_json(200, {"ok": True, **payload})
+            except ValueError:
+                self.send_json(400, {"ok": False, "message": "历史查询参数无效。"})
+            except (OSError, sqlite3.Error):
+                self.send_json(503, {"ok": False, "message": "历史数据暂时不可用。"})
             return
         if parsed.path == "/api/admin/analytics":
             try:
