@@ -41,8 +41,8 @@ def item(shop_token: str, price: float, *, stale: bool = False, fetched_at: str 
         "goods_type_label": "卡密",
         "shop": f"店铺{shop_token}",
         "shop_token": shop_token,
-        "shop_url": f"https://pay.ldxp.cn/shop/{shop_token}",
-        "link": f"https://pay.ldxp.cn/item/ITEM{shop_token}",
+        "shop_url": f"https://wzyp.cn/shop/{shop_token}",
+        "link": f"https://wzyp.cn/item/ITEM{shop_token}",
         "tags": ["已接码"],
         "canonical": "plus已接码",
         "stale": stale,
@@ -63,6 +63,12 @@ class ClassificationTest(unittest.TestCase):
     def test_team_name_wins_over_k12_upstream_category(self):
         self.assertEqual(server.classify("长效 周额team", "K12"), "OpenAI Team")
         self.assertEqual(server.classify("团队工作区账号", "K12"), "OpenAI Team")
+
+
+class UpstreamConfigurationTest(unittest.TestCase):
+    def test_upstream_root_uses_live_domain(self):
+        self.assertEqual(server.API_ROOT, "https://wzyp.cn")
+        self.assertTrue(all(shop["url"].startswith(f"{server.API_ROOT}/shop/") for shop in server.SHOPS))
 
 
 class InventoryRefreshTest(unittest.TestCase):
@@ -123,8 +129,8 @@ class StaleInventoryTest(unittest.TestCase):
         server.LAST_GOOD.update(self.last_good)
 
     def test_stale_source_keeps_age_and_sorts_after_fresh_source(self):
-        shop_a = {"name": "店铺A", "token": "A", "url": "https://pay.ldxp.cn/shop/A"}
-        shop_b = {"name": "店铺B", "token": "B", "url": "https://pay.ldxp.cn/shop/B"}
+        shop_a = {"name": "店铺A", "token": "A", "url": "https://wzyp.cn/shop/A"}
+        shop_b = {"name": "店铺B", "token": "B", "url": "https://wzyp.cn/shop/B"}
         server.SHOPS = (shop_a, shop_b)
         server.LAST_GOOD.clear()
         server.LAST_GOOD["A"] = {

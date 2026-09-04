@@ -16,7 +16,7 @@ BASE_URL = "http://127.0.0.1:8765/"
 
 def fixture_payload() -> dict:
     fetched_at = datetime.now().astimezone().isoformat(timespec="seconds")
-    shop = {"name": "测试店", "token": "SHOP1", "url": "https://pay.ldxp.cn/shop/SHOP1"}
+    shop = {"name": "测试店", "token": "SHOP1", "url": "https://wzyp.cn/shop/SHOP1"}
     specs = [
         ("旧数据 Plus 已接码", "PLUS", 0.1, 2, True),
         ("Plus 已接码 标准版", "PLUS", 5, 3, False),
@@ -40,7 +40,7 @@ def fixture_payload() -> dict:
                 "price": price,
                 "category": {"name": category},
                 "extend": {"stock_count": count},
-                "link": f"https://pay.ldxp.cn/item/ITEM{index}",
+                "link": f"https://wzyp.cn/item/ITEM{index}",
             },
             shop,
             "card",
@@ -89,7 +89,7 @@ def fixture_payload() -> dict:
                 "name": "旧数据店",
                 "nickname": "旧数据店",
                 "token": "SHOP2",
-                "url": "https://pay.ldxp.cn/shop/SHOP2",
+                "url": "https://wzyp.cn/shop/SHOP2",
                 "ok": False,
                 "stale": True,
                 "message": "网络连接超时，显示上次数据",
@@ -262,7 +262,7 @@ def main() -> None:
         assert page.locator(".inventory-group .product-row").count() == initial_rows
 
         first_link = page.locator(".product-link").first.get_attribute("href")
-        assert first_link and first_link.startswith("https://pay.ldxp.cn/item/")
+        assert first_link and first_link.startswith("https://wzyp.cn/item/")
 
         page.locator("#refreshButton").click()
         page.locator("#refreshButton:not([disabled])").wait_for(timeout=60_000)

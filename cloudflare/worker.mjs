@@ -1,5 +1,5 @@
 const TYPE_LABELS = { card: "卡密", article: "文章", resource: "资源", equity: "权益" };
-const API_ROOT = "https://pay.ldxp.cn";
+const API_ROOT = "https://wzyp.cn";
 const REFRESH_SECONDS = 300;
 const MANUAL_REFRESH_COOLDOWN_MS = 30_000;
 const PAGE_SIZE = 200;
@@ -381,7 +381,7 @@ export async function handleRequest(request, env, ctx, dependencies = {}) {
     return jsonResponse({
       ok: true,
       service: "stock-comparison",
-      version: "2026-08-17.2-worker",
+      version: "2026-09-05.1-worker",
       revision: env?.SERVICE_REVISION || "worker-fallback",
     });
   }

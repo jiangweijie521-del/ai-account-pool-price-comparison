@@ -112,7 +112,7 @@ function stockText(item) {
 function safeLink(value, fallback) {
   try {
     const url = new URL(value);
-    return url.protocol === "https:" && url.hostname === "pay.ldxp.cn" ? url.href : fallback;
+    return url.protocol === "https:" && url.hostname === "wzyp.cn" ? url.href : fallback;
   } catch {
     return fallback;
   }
@@ -313,7 +313,7 @@ function renderShops() {
   if (!state.data) return;
   for (const shop of state.data.shops) {
     const link = createElement("a", "shop-status");
-    link.href = safeLink(shop.url, "https://pay.ldxp.cn");
+    link.href = safeLink(shop.url, "https://wzyp.cn");
     link.target = "_blank";
     link.rel = "noopener noreferrer";
     const status = shop.ok ? "正常" : shop.stale ? "旧数据" : "读取失败";

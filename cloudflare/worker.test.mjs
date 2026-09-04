@@ -11,7 +11,7 @@ function createUpstreamFixture() {
     price: "12.50",
     category: { name: "PLUS" },
     extend: { stock_count: "2" },
-    link: "https://pay.ldxp.cn/item/ITEM1",
+    link: "https://wzyp.cn/item/ITEM1",
   };
   return {
     count: () => calls,
@@ -73,7 +73,7 @@ test("transformItem rejects unsafe fields and emits the browser payload", () => 
       extend: { stock_count: "3" },
       link: "https://attacker.example/steal",
     },
-    { name: "测试店", token: "SHOP1", url: "https://pay.ldxp.cn/shop/SHOP1" },
+    { name: "测试店", token: "SHOP1", url: "https://wzyp.cn/shop/SHOP1" },
     "card",
   );
 
@@ -93,7 +93,7 @@ test("transformItem rejects unsafe fields and emits the browser payload", () => 
       stock: 3,
       available: true,
       group: "GPT Plus · 已接码",
-      link: "https://pay.ldxp.cn/item/ABC123",
+      link: "https://wzyp.cn/item/ABC123",
       canonical: "plus已接码可用",
     },
   );
@@ -102,7 +102,7 @@ test("transformItem rejects unsafe fields and emits the browser payload", () => 
 test("collectInventory aggregates a complete upstream shop response", async () => {
   assert.equal(typeof worker.collectInventory, "function");
   const calls = [];
-  const shop = { name: "测试店", token: "SHOP1", url: "https://pay.ldxp.cn/shop/SHOP1" };
+  const shop = { name: "测试店", token: "SHOP1", url: "https://wzyp.cn/shop/SHOP1" };
   const fetchFixture = async (url, options) => {
     const body = JSON.parse(options.body);
     calls.push({ path: new URL(url).pathname, body });
@@ -117,7 +117,7 @@ test("collectInventory aggregates a complete upstream shop response", async () =
             price: "12.50",
             category: { name: "PLUS" },
             extend: { stock_count: "2" },
-            link: "https://pay.ldxp.cn/item/ITEM1",
+            link: "https://wzyp.cn/item/ITEM1",
           },
           {
             name: "Codex Free",
@@ -125,7 +125,7 @@ test("collectInventory aggregates a complete upstream shop response", async () =
             price: "2.00",
             category: { name: "GPT Free" },
             extend: { stock_count: "0" },
-            link: "https://pay.ldxp.cn/item/ITEM2",
+            link: "https://wzyp.cn/item/ITEM2",
           },
         ]
       : [];
@@ -190,7 +190,7 @@ test("handleRequest exposes a production health endpoint", async () => {
 test("handleRequest reuses the shared inventory cache", async () => {
   const upstream = createUpstreamFixture();
   const cache = createMemoryCache();
-  const shop = { name: "测试店", token: "SHOP1", url: "https://pay.ldxp.cn/shop/SHOP1" };
+  const shop = { name: "测试店", token: "SHOP1", url: "https://wzyp.cn/shop/SHOP1" };
   const pending = [];
   const context = { waitUntil: (promise) => pending.push(promise) };
   const dependencies = { fetchImpl: upstream.fetch, cache, shopsConfig: [shop] };
@@ -211,7 +211,7 @@ test("handleRequest reuses the shared inventory cache", async () => {
 test("handleRequest keeps manual refreshes inside the shared cache window", async () => {
   const upstream = createUpstreamFixture();
   const cache = createMemoryCache();
-  const shop = { name: "测试店", token: "SHOP1", url: "https://pay.ldxp.cn/shop/SHOP1" };
+  const shop = { name: "测试店", token: "SHOP1", url: "https://wzyp.cn/shop/SHOP1" };
   const pending = [];
   const context = { waitUntil: (promise) => pending.push(promise) };
   const dependencies = { fetchImpl: upstream.fetch, cache, shopsConfig: [shop] };
@@ -229,7 +229,7 @@ test("handleRequest keeps manual refreshes inside the shared cache window", asyn
 test("handleRequest bypasses cache for a manual refresh after cooldown", async () => {
   const upstream = createUpstreamFixture();
   const cache = createMemoryCache();
-  const shop = { name: "测试店", token: "SHOP1", url: "https://pay.ldxp.cn/shop/SHOP1" };
+  const shop = { name: "测试店", token: "SHOP1", url: "https://wzyp.cn/shop/SHOP1" };
   const pending = [];
   const context = { waitUntil: (promise) => pending.push(promise) };
   let now = Date.now();

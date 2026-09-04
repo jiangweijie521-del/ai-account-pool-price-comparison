@@ -30,14 +30,14 @@ from urllib.request import Request, urlopen
 
 
 ROOT = Path(__file__).resolve().parent
-API_ROOT = "https://pay.ldxp.cn"
+API_ROOT = "https://wzyp.cn"
 REFRESH_SECONDS = 300
 CACHE_SECONDS = 290
 MANUAL_REFRESH_COOLDOWN_SECONDS = 30
 PERSIST_SECONDS = 15 * 60
 UPSTREAM_MIN_INTERVAL = 0.25
 HTTP_TIMEOUT = 20
-SERVICE_VERSION = "2026-08-17.2"
+SERVICE_VERSION = "2026-09-05.1"
 SERVICE_REVISION = os.environ.get("SERVICE_REVISION", "dev")
 SERVICE_STARTED_AT = datetime.now().astimezone().isoformat(timespec="seconds")
 MAX_RESPONSE_BYTES = 12 * 1024 * 1024
